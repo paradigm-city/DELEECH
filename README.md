@@ -4,7 +4,7 @@ Anti-leecher plugin for **Nicotine+**.
 
 DELEECH watches users when they queue uploads, checks whether they expose a minimum number of public shares, warns users who fall below the configured threshold, tracks repeated offenses in a local SQLite database, and can automatically ban and unban repeat offenders.
 
-
+DELEECH is an extension of the Leech Detector plugin.
 
 This README is based on the current code in `DELEECH/__init__.py` and `DELEECH/PLUGININFO`.
 
@@ -208,11 +208,9 @@ So this is not a standalone Python utility; it is a Nicotine+ plugin that depend
 
 ---
 
-## Known limitations and code-level observations
+## Known limitations
 
-These points come directly from the current implementation and are worth knowing before deployment:
-
-1.**Buddies are exempted** from enforcement even if they do not meet the configured share thresholds.
+1. **Buddies are exempted** from enforcement even if they do not meet the configured share thresholds.
 2. **Warning/banning is post-transfer oriented.** In the common path, the plugin lets the current transfer complete, then warns or escalates afterward.
 3. **Suspicious-user heuristics are opinionated.** Some legitimate users with round-number statistics may be forced into additional verification.
 4. **The plugin depends on filesystem access to the transferred file path** in order to calculate the completed upload size.
