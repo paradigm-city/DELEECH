@@ -4,9 +4,24 @@ Anti-leecher plugin for **Nicotine+**.
 
 DELEECH watches users when they queue uploads, checks whether they expose a minimum number of public shares, warns users who fall below the configured threshold, tracks repeated offenses in a local SQLite database, and can automatically ban and unban repeat offenders.
 
+
+
 This README is based on the current code in `DELEECH/__init__.py` and `DELEECH/PLUGININFO`.
 
 ---
+
+## Why this exists
+
+Sharing is the foundation, not an optional extra.
+A file-sharing network survives only when enough users actually share.
+
+Risk should not be one-sided.
+Uploaders bear the bandwidth load, availability burden, and often the greater exposure. It is reasonable to expect downloaders to contribute in return.
+
+Fairness needs enforcement.
+Without consequences, “share if you feel like it” quickly becomes “take without giving back.” DELEECH exists to promote this kind of reciprocity.
+
+The goal is not punishment. The goal is to protect the people who keep the network alive, discourage exploitative behavior, and preserve a culture of mutual exchange.
 
 ## What it does
 
@@ -61,7 +76,7 @@ When a user is identified as a leecher, DELEECH can send a private message. That
 - `%folders%`
 - `%leecher%`
 
-Warnings are not necessarily sent after every single upload. The plugin uses an internal state machine such as `pending_leecher`, `processed_leecher01`, `pending_ban`, and `check_before_ban` to control when the message is repeated.
+Warnings are not necessarily sent after every single upload. The warning frequency is controlled by the `msg_repeat_after` parameter. The plugin uses an internal state machine such as `pending_leecher`, `processed_leecher<nn>`, `pending_ban`, and `check_before_ban` to control when the message is repeated.
 
 ### Automatic bans
 
@@ -75,7 +90,7 @@ Default values:
 The current implementation bans when:
 
 - the strike count grows beyond `auto_ban_after`, or
-- the user's downloaded volume exceeds `leecher_quota_mb`
+- the user's downloaded volume exceeds `leecher_quota_mb`. This is used to handle high volume leechers. 
 
 Before the final ban in the normal warning path, DELEECH performs one more share verification request.
 
