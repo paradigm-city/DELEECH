@@ -290,7 +290,7 @@ class Plugin(BasePlugin):
                     except ValueError:
                         end_of_ban = datetime.strptime(ban_end_date, '%Y-%m-%d %H:%M:%S')
                 self.log_debug("%s: user was banned after %d strikes, ban expires %s", (user, strikes, end_of_ban))
-                if end_of_ban < datetime.now() AND self.settings["auto_unban_leechers"] == True: # has the ban expired?
+                if end_of_ban < datetime.now() and self.settings["auto_unban_leechers"] == True: # has the ban expired?
                     self.log_debug("%s: ban has expired, unban", user)
                     self.unstrike_leecher(leecher)
 
