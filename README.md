@@ -212,26 +212,10 @@ So this is not a standalone Python utility; it is a Nicotine+ plugin that depend
 
 These points come directly from the current implementation and are worth knowing before deployment:
 
-1. **`auto_unban_leechers` is exposed as a setting, but the current code does not appear to use that flag in the unban path.** Automatic unban logic exists, but it is not gated by that setting.
-2. **Buddies are exempted** from enforcement even if they do not meet the configured share thresholds.
-3. **Warning/banning is post-transfer oriented.** In the common path, the plugin lets the current transfer complete, then warns or escalates afterward.
-4. **Suspicious-user heuristics are opinionated.** Some legitimate users with round-number statistics may be forced into additional verification.
-5. **The plugin depends on filesystem access to the transferred file path** in order to calculate the completed upload size.
-6. **The repository currently contains only the plugin package and a minimal top-level README.** There are no automated tests, releases, or CI configuration in the repository.
-
----
-
-## Suggested improvements
-
-If you plan to extend the plugin, the most obvious next steps are:
-
-- honor `auto_unban_leechers` in the actual unban logic,
-- add a configurable whitelist beyond Nicotine+ buddies,
-- make suspicious-user heuristics configurable,
-- add a command or UI to inspect strike history,
-- ship a sample config and screenshots,
-- add tests around strike escalation and ban expiry,
-- document exact Nicotine+ version compatibility.
+1.**Buddies are exempted** from enforcement even if they do not meet the configured share thresholds.
+2. **Warning/banning is post-transfer oriented.** In the common path, the plugin lets the current transfer complete, then warns or escalates afterward.
+3. **Suspicious-user heuristics are opinionated.** Some legitimate users with round-number statistics may be forced into additional verification.
+4. **The plugin depends on filesystem access to the transferred file path** in order to calculate the completed upload size.
 
 ---
 
