@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2011-2025 Nicotine+ Contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+Version = "2025-09-20r00"
+Authors = ["Paradigm_city"]
+Name = "DELEECH"
+Description = "Leech detector SQLite version"
