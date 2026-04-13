@@ -2,6 +2,13 @@
 # SPDX-FileCopyrightText: 2011 quinox <quinox@users.sf.net>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+# Filename: __init__.py
+# Author: paradigm_city
+# Created: 2026-04-10
+# Description: DELEECH plugin for nicotine+
+# Version: 0.3
+# Schema version: 3
+
 from pynicotine.pluginsystem import BasePlugin
 from pynicotine.uploads import Uploads
 from pynicotine.core import core
@@ -34,7 +41,8 @@ class Plugin(BasePlugin):
             "leecher_quota_mb": 200,
             "num_files": 60,
             "num_folders": 1,
-            "debug_log": False
+            "debug_log": False,
+            "schema_version": 1
         }
         self.metasettings = {
             "message": {
@@ -91,13 +99,12 @@ class Plugin(BasePlugin):
         self.probed_users = {}
         
         config_folder_path, data_folder_path = config.get_user_folders()
+
+        # database
         database_path = os.path.join(data_folder_path, "deleech.db")
         self.log("database: %s", database_path)
-        
-        # database
         self.conn = sqlite3.connect(database_path)
         self.csr = self.conn.cursor()
-        self.dbinit()        
         
     def __del__(self):
         try:
@@ -124,11 +131,29 @@ class Plugin(BasePlugin):
                 ", unban_count int default 0" \
                 ", unban_date datetime" \
                 ", ban_end_date datetime" \
-                ", mb_uploaded real default 0" \
-                ", last_state TEXT" \
                 ")"
         self.csr.execute(sql)
         self.conn.commit()
+        
+        self.log_debug("update database schema...")
+        # maintain database schema
+        if self.settings["schema_version"] < 2:
+            self.log_debug("update schema to version 2")
+            for sql in (\
+                "alter table strikes add column mb_uploaded real default 0"   #0.2\
+                , "alter table strikes add column last_state TEXT"            #0.2\
+            ):
+                try:
+                    self.csr.execute(sql)
+                except Exception as e:
+                    self.log_debug(e)
+                finally:
+                    self.conn.commit()
+
+        if self.settings["schema_version"] < 3:
+            self.log_debug("update schema to version 3")
+            # no changes to schema
+            self.settings["schema_version"] =3
         
     def log_debug(self, msg, msg_args=None):
         if self.settings["debug_log"] == True:
@@ -145,14 +170,14 @@ class Plugin(BasePlugin):
         if self.settings["num_folders"] < min_num_folders:
             self.settings["num_folders"] = min_num_folders
         
-        #self.log("Loaded strike history for %d users.", len(self.settings["leecher_strikes"]))
-        #for leecher, strikes, strikedate in self.settings["leecher_strikes"]:
-        #    self.log("   %s: %s strikes, last %s", (leecher, strikes, strikedate))
         self.log("Require users to share a minimum of %d files in %d shared public folder(s)."
                 , (self.settings["num_files"], self.settings["num_folders"]))
         if self.settings["auto_ban_leechers"]:
             self.log("Leechers will be banned after %s warnings"
                     , self.settings["auto_ban_after"])
+        
+        self.dbinit()
+
 
     def on_auto_ban_leechers_toggled(self, switch, gparam):
         self.option_widgets["auto_ban_after"].set_sensitive(switch.get_active())
@@ -298,29 +323,34 @@ class Plugin(BasePlugin):
         self.check_user(user, num_files=stats["files"], num_folders=stats["dirs"], source=stats["source"])
 
     def strike_leecher(self, user):
-        self.log("%s: striking", user)
-        
-        self.csr.execute("insert or ignore into strikes(leecher, strikes, strikedate, laststrikedate, strikes_total) " \
-                         "values (?, ?, ?, ?, ?)"
-                         , [user, 0, datetime.now(), datetime.now(), 0])
-        self.csr.execute("update strikes set " \
-                         "strikes=strikes+1, strikes_total=strikes_total+1, " \
-                         "strikedate=STRFTIME('%Y-%m-%d %H:%M:%f', 'now') , " \
-                         "laststrikedate=STRFTIME('%Y-%m-%d %H:%M:%f', 'now'), " \
-                         "last_state=? where leecher=?"
-                         , [self.probed_users[user], user]
-                         )
-        self.conn.commit()
-        
+        if self.probed_users[user].startswith("processed_leecher"):
+            self.log("%s: striking", user)
+            
+            self.csr.execute("insert or ignore into strikes(leecher, strikes, strikedate, laststrikedate, strikes_total) " \
+                             "values (?, ?, ?, ?, ?)"
+                             , [user, 0, datetime.now(), datetime.now(), 0])
+            self.csr.execute("update strikes set " \
+                             "strikes=strikes+1, strikes_total=strikes_total+1, " \
+                             "strikedate=STRFTIME('%Y-%m-%d %H:%M:%f', 'now') , " \
+                             "laststrikedate=STRFTIME('%Y-%m-%d %H:%M:%f', 'now'), " \
+                             "last_state=? where leecher=?"
+                             , [self.probed_users[user], user]
+                             )
+            self.conn.commit()
+           
+        # we need to get these numbers regardless of whether warning level was raised
         self.csr.execute("SELECT leecher, strikes, unban_count FROM strikes where leecher=?", [user])
         rows = self.csr.fetchall()
         num_strikes = int(rows[0][1])        
         unban_count = int(rows[0][2])      
-        self.log_debug("%s: warning level set to %s", (user, num_strikes))
+
+        # only output this message if warning level was actually raised before
+        if self.probed_users[user].startswith("processed_leecher"):
+            self.log_debug("%s: warning level set to %s", (user, num_strikes))
             
-        if num_strikes > self.settings["auto_ban_after"] or self.probed_users[user] == "leecher_exceeded_quota":
+        if num_strikes >= self.settings["auto_ban_after"] or self.probed_users[user] == "leecher_exceeded_quota":
             if self.probed_users[user] == "pending_ban" or self.probed_users[user] == "leecher_exceeded_quota":
-                self.log("%s: banning leecher after %s warnings", (rows[0][0], rows[0][1]-1))
+                self.log("%s: banning leecher after %s warnings", (user, num_strikes))
                 ban_days = self.bans_2_days(unban_count+1)
                 self.log_debug("%s: unban_count: %d, ban_days: %d", (user, unban_count, ban_days))
                 ban_end_date = datetime.now() + timedelta(days=ban_days)
