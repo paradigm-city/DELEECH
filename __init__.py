@@ -4,9 +4,9 @@
 
 # Filename: __init__.py
 # Author: paradigm_city
-# Created: 2026-04-10
+# Created: 2026-04-20
 # Description: DELEECH plugin for nicotine+
-# Version: 0.3
+# Version: 0.4
 # Schema version: 3
 
 from pynicotine.pluginsystem import BasePlugin
@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 import sqlite3
 import os
 import math
+import re
 
 class Plugin(BasePlugin):
 
@@ -42,8 +43,10 @@ class Plugin(BasePlugin):
             "num_files": 60,
             "num_folders": 1,
             "debug_log": False,
-            "schema_version": 1
+            "schema_version": 1,
+            "banned_name_patterns": "^LeecherNameHere"
         }
+        
         self.metasettings = {
             "message": {
                 "description": ("Private chat message to send to leechers. Each line is sent as a separate message, "
@@ -78,10 +81,6 @@ class Plugin(BasePlugin):
                 "description": "Auto unban leechers",
                 "type": "bool"
             },
-#            "ban_period": {
-#                "description": "Ban duration in days:",
-#                "type": "int", "minimum": 1
-#            },
             "num_files": {
                 "description": "Minimum number of shared files required:",
                 "type": "int", "minimum": 3
@@ -93,11 +92,20 @@ class Plugin(BasePlugin):
             "debug_log": {
                 "description": "Debug logging",
                 "type": "bool"
+            },
+            "banned_name_patterns": {
+                "description": (
+                    "Banned username patterns (one regex per line). "
+                    "Matching users are immediately banned on first queue attempt, no warnings. "
+                    "Example: ^aurral_ matches any name starting with aurral_"
+                ),
+                "type": "textview"
             }
         }
 
         self.probed_users = {}
-        
+        self._banned_patterns = []
+                
         config_folder_path, data_folder_path = config.get_user_folders()
 
         # database
@@ -127,7 +135,7 @@ class Plugin(BasePlugin):
                 ", strikedate DATETIME" \
                 ", is_banned int(1) default 0" \
                 ", strikes_total integer" \
-                " laststrikedate datetime" \
+                ", laststrikedate datetime" \
                 ", unban_count int default 0" \
                 ", unban_date datetime" \
                 ", ban_end_date datetime" \
@@ -135,20 +143,20 @@ class Plugin(BasePlugin):
         self.csr.execute(sql)
         self.conn.commit()
         
-        self.log_debug("update database schema...")
+#        self.log_debug("update database schema...")
         # maintain database schema
         if self.settings["schema_version"] < 2:
             self.log_debug("update schema to version 2")
-            for sql in (\
+            for sql in (
                 "alter table strikes add column mb_uploaded real default 0"   #0.2\
                 , "alter table strikes add column last_state TEXT"            #0.2\
             ):
                 try:
                     self.csr.execute(sql)
-                except Exception as e:
-                    self.log_debug(e)
-                finally:
                     self.conn.commit()
+                except sqlite3.OperationalError:
+                    pass  # column already exists, ignore
+            self.settings["schema_version"] =2
 
         if self.settings["schema_version"] < 3:
             self.log_debug("update schema to version 3")
@@ -177,29 +185,52 @@ class Plugin(BasePlugin):
                     , self.settings["auto_ban_after"])
         
         self.dbinit()
+        self._compile_banned_patterns()
 
+    def _compile_banned_patterns(self):
+        self._banned_patterns = []
+        raw = self.settings.get("banned_name_patterns", "")
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                self._banned_patterns.append(re.compile(line, re.IGNORECASE))
+                self.log_debug("Loaded ban pattern: %s", line)
+            except re.error as e:
+                self.log("Invalid regex pattern '%s': %s", (line, e))
+        self.log("Loaded %d banned name pattern(s).", len(self._banned_patterns))
+
+    def _is_name_banned(self, user):
+        for pattern in self._banned_patterns:
+            if pattern.search(user):
+                return pattern.pattern
+        return None
 
     def on_auto_ban_leechers_toggled(self, switch, gparam):
         self.option_widgets["auto_ban_after"].set_sensitive(switch.get_active())
-                        
+
+    def settings_changed_notification(self, before, after):
+        if before.get("banned_name_patterns") != after.get("banned_name_patterns"):
+            self._compile_banned_patterns()
+                                             
     def is_suspect_user(self, user, num_files, num_folders, source="server"):
         if (num_files == 1000 and num_folders == 50):
             return True
-#        elif (num_files / max(num_folders,1) <= 1.3):
-#            return True
+        elif (num_files / max(num_folders,1) <= 1.3):
+            return True
         elif (num_files / max(num_folders,1) > 2000):
             return True
         elif ((num_files % max(num_folders,1) == 0) and (num_files % 50 == 0)):
             return True
-        elif (num_files % 100 == 0):
-            return True
+#        elif (num_files % 100 == 0):
+#            return True
         else:
             return False
             
     def bans_2_days(self, bans):
         days = 10**(float(bans)/5)
         e = int(math.log(days)/math.log(10))
-        # return int(int(days / 10**e) * 10**e)
         return int(days)
     
     def check_user(self, user, num_files, num_folders, source="server"):
@@ -276,6 +307,14 @@ class Plugin(BasePlugin):
         self.log_debug(log_message, (user, num_files, num_folders, notification_type))
 
     def upload_queued_notification(self, user, virtual_path, real_path):
+
+        # Pattern ban: immediate ban, no warnings, no strike process
+        matched_pattern = self._is_name_banned(user)
+        if matched_pattern:
+            if not self.core.network_filter.is_user_banned(user):
+                self.log("%s: name matches banned pattern '%s', banning immediately.", (user, matched_pattern))
+                self.core.network_filter.ban_user(user)
+            return
 
         if user in self.probed_users:
             return
