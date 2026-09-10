@@ -5,7 +5,7 @@
 # Filename: __init__.py
 # Author: paradigm_city
 # Description: DELEECH plugin for nicotine+
-# Version: 0.6
+# Version: 0.7
 # Schema version: 3
 
 from pynicotine.pluginsystem import BasePlugin
@@ -54,6 +54,7 @@ class Plugin(BasePlugin):
             "min_shared_mb": 50,
             "min_avg_file_kb": 500,
             "ban_progression": "fibonacci",
+            "show_ui_tab": True,
             "debug_log": False,
             "schema_version": 1,
             "banned_name_patterns": "^LeecherNameHere"
@@ -114,6 +115,10 @@ class Plugin(BasePlugin):
                 "type": "dropdown",
                 "options": ["fibonacci", "exponential"]
             },
+            "show_ui_tab": {
+                "description": "Show DELEECH monitor tab in main window",
+                "type": "bool"
+            },
             "debug_log": {
                 "description": "Debug logging",
                 "type": "bool"
@@ -131,6 +136,13 @@ class Plugin(BasePlugin):
         self.probed_users = {}
         self._banned_patterns = []
 
+        # UI Transparency state
+        self.ui_page = None
+        self.treeview = None
+        self.stats_label = None
+        self.filter_entry = None
+        self._filter_text = ""
+
         config_folder_path, data_folder_path = config.get_user_folders()
 
         # database
@@ -140,6 +152,7 @@ class Plugin(BasePlugin):
         self.csr = self.conn.cursor()
 
     def __del__(self):
+        self._teardown_ui()
         try:
             self.log("cursor closing...")
             self.csr.close()
@@ -151,6 +164,27 @@ class Plugin(BasePlugin):
         except Exception:
             pass
         self.log("cleanup done")
+
+    def _write_ui_log(self, msg):
+        try:
+            log_path = os.path.join(os.path.dirname(__file__), "ui_debug.log")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        except Exception:
+            pass
+
+    def init(self):
+        self._write_ui_log("init() called")
+        if self.settings.get("show_ui_tab", True):
+            self._init_ui()
+
+    def disable(self):
+        self._write_ui_log("disable() called")
+        self._teardown_ui()
+
+    def unloaded_notification(self):
+        self._write_ui_log("unloaded_notification() called")
+        self._teardown_ui()
 
     def dbinit(self):
         self.log_debug("init db...")
@@ -211,6 +245,10 @@ class Plugin(BasePlugin):
         self.dbinit()
         self._compile_banned_patterns()
 
+        self._write_ui_log(f"loaded_notification() called, show_ui_tab={self.settings.get('show_ui_tab', True)}")
+        if self.settings.get("show_ui_tab", True):
+            self._init_ui()
+
     def _compile_banned_patterns(self):
         self._banned_patterns = []
         raw = self.settings.get("banned_name_patterns", "")
@@ -237,6 +275,12 @@ class Plugin(BasePlugin):
     def settings_changed_notification(self, before, after):
         if before.get("banned_name_patterns") != after.get("banned_name_patterns"):
             self._compile_banned_patterns()
+
+        if before.get("show_ui_tab") != after.get("show_ui_tab"):
+            if after.get("show_ui_tab"):
+                self._init_ui()
+            else:
+                self._teardown_ui()
 
     def is_suspect_user(self, user, num_files, num_folders, shared_size=0, source="server"):
         """Evaluates whether share numbers warrant suspicion and deeper inspection."""
@@ -374,7 +418,6 @@ class Plugin(BasePlugin):
                 force_user_check = False
         else:
             # On peer stats (source == "peer"): ground truth is verified directly.
-            # If the user meets file count, folder count, and size thresholds, they are cleared!
             is_user_accepted = (meets_counts and meets_size and not is_suspect)
             force_user_check = False
 
@@ -388,6 +431,7 @@ class Plugin(BasePlugin):
             else:
                 self.log_debug("%s: buddy is sharing %s files in %s folders. Not complaining.",
                                (user, num_files, num_folders))
+            self.trigger_ui_refresh()
             return
         else:
             # user was not accepted or buddy - check if a ban is pending
@@ -396,6 +440,7 @@ class Plugin(BasePlugin):
             if self.probed_users[user] == "check_before_ban":
                 self.log_debug("%s: arming a pending ban", user)
                 self.probed_users[user] = "pending_ban"
+                self.trigger_ui_refresh()
                 return
 
         if not (self.probed_users[user].startswith("requesting") or self.probed_users[user] == "check_before_ban"):
@@ -407,15 +452,14 @@ class Plugin(BasePlugin):
         if rows[0][0] > 0:
             # We already messaged the user in a previous session
             self.probed_users[user] = "processed_leecher01"
+            self.trigger_ui_refresh()
             return
 
         if (num_files <= 0 or num_folders <= 0 or force_user_check) and self.probed_users[user] != "requesting_shares":
-            # SoulseekQt only sends the number of shared files/folders to the server once on startup.
-            # Verify user's actual number of files/folders directly from peer.
             self.log_debug("%s: verifying actual shares directly from peer…", user)
-
             self.probed_users[user] = "requesting_shares"
             self.core.userbrowse.request_user_shares(user)
+            self.trigger_ui_refresh()
             return
 
         log_message = ("%s: leecher detected, sharing %s files in %s folders. Going to %s leecher when transfer starts.")
@@ -427,6 +471,7 @@ class Plugin(BasePlugin):
 
         self.probed_users[user] = "pending_leecher"
         self.log_debug(log_message, (user, num_files, num_folders, notification_type))
+        self.trigger_ui_refresh()
 
     def upload_queued_notification(self, user, virtual_path, real_path):
 
@@ -453,8 +498,6 @@ class Plugin(BasePlugin):
             # Transfer manager will request the stats from the server shortly
             return
 
-        # We've received the user's stats in the past. They could be outdated by
-        # now, so request them again.
         self.core.users.request_user_stats(user)
 
     def user_status_notification(self, user, status, privileged):
@@ -477,6 +520,7 @@ class Plugin(BasePlugin):
                 if end_of_ban < datetime.now() and self.settings["auto_unban_leechers"]: # has the ban expired?
                     self.log_debug("%s: ban has expired, unban", user)
                     self.unstrike_leecher(leecher)
+            self.trigger_ui_refresh()
 
     def user_stats_notification(self, user, stats):
         try:
@@ -550,6 +594,8 @@ class Plugin(BasePlugin):
                 self.log_debug("%s: final request shares before ban", user)
                 self.core.userbrowse.request_user_shares(user)
 
+        self.trigger_ui_refresh()
+
     def unstrike_leecher(self, user):
         self.csr.execute("update strikes set strikes=0, strikedate=null, mb_uploaded=0, last_state=null where leecher=? and strikes > 0", [user])
         if self.csr.rowcount > 0:
@@ -561,6 +607,8 @@ class Plugin(BasePlugin):
             self.core.network_filter.unban_user(user)
             self.csr.execute("update strikes set is_banned=0, unban_count=unban_count+1, unban_date=STRFTIME('%Y-%m-%d %H:%M:%f', 'now'), ban_end_date=NULL where leecher=?", [user])
             self.conn.commit()
+
+        self.trigger_ui_refresh()
 
     def upload_started_notification(self, user, virtual_path, real_path):
 
@@ -594,6 +642,7 @@ class Plugin(BasePlugin):
 
             if not self.settings["message"]:
                 self.log_debug("%s: not msgd to leecher due to plugin settings.", user)
+                self.trigger_ui_refresh()
                 return
 
             for line in self.settings["message"].splitlines():
@@ -615,3 +664,516 @@ class Plugin(BasePlugin):
 
         elif self.probed_users[user].startswith("pending_ban"):
             self.strike_leecher(user)
+
+        self.trigger_ui_refresh()
+
+    # -------------------------------------------------------------------------
+    # UI Transparency (GTK Monitor Tab & TreeView)
+    # -------------------------------------------------------------------------
+
+    def _init_ui(self):
+        if self.ui_page is not None:
+            return
+        try:
+            self._write_ui_log("_init_ui() scheduled via GLib.idle_add")
+            from gi.repository import GLib
+            GLib.idle_add(self._setup_ui)
+        except Exception as e:
+            self._write_ui_log(f"_init_ui() skipped/failed: {e}")
+            self.log_debug("UI initialization skipped: %s", e)
+
+    def _setup_ui(self):
+        try:
+            from gi.repository import GLib, Gio
+            import pynicotine.gtkgui.application as app_module
+
+            app = getattr(app_module, "_instance", None)
+            if not app and hasattr(app_module, "Application"):
+                app = getattr(app_module.Application, "_instance", None)
+            if not app:
+                try:
+                    app = Gio.Application.get_default()
+                except Exception:
+                    pass
+
+            self._write_ui_log(f"DEBUG app={app}, type={type(app).__name__ if app else None}")
+            app_win = getattr(app, "window", None) if app else None
+            self._write_ui_log(f"DEBUG app.window={app_win}, type={type(app_win).__name__ if app_win else None}")
+
+            if app and hasattr(app, "get_windows"):
+                wins = app.get_windows()
+                self._write_ui_log(f"DEBUG get_windows count={len(wins)}")
+                for idx, w in enumerate(wins):
+                    w_type = type(w).__name__
+                    has_nb = hasattr(w, "notebook")
+                    nb_val = getattr(w, "notebook", None)
+                    nb_type = type(nb_val).__name__ if nb_val else None
+                    matching_attrs = [x for x in dir(w) if any(k in x.lower() for k in ["note", "page", "tab", "main"])]
+                    self._write_ui_log(f"DEBUG win[{idx}]: type={w_type}, has_notebook={has_nb}, nb_type={nb_type}, matching_attrs={matching_attrs}")
+
+            import gc
+            main_windows = [obj for obj in gc.get_objects() if type(obj).__name__ == "MainWindow"]
+            self._write_ui_log(f"DEBUG gc found MainWindows: {len(main_windows)}")
+            for idx, mw in enumerate(main_windows):
+                has_nb = hasattr(mw, "notebook")
+                nb = getattr(mw, "notebook", None)
+                self._write_ui_log(f"DEBUG MainWindow[{idx}]: id={hex(id(mw))}, has_notebook={has_nb}, nb={type(nb).__name__ if nb else None}")
+                if has_nb and nb:
+                    window = mw
+                    self._write_ui_log(f"DEBUG using MainWindow from gc: {mw}")
+                    break
+
+            if not window or not getattr(window, "notebook", None):
+                self._write_ui_log(f"window or notebook not ready yet (window={window}, notebook={getattr(window, 'notebook', None)}), retrying in 500ms...")
+                GLib.timeout_add(500, self._setup_ui)
+                return False
+
+            if self.ui_page is not None:
+                self._write_ui_log("ui_page is already initialized, skipping.")
+                return False
+
+            self._create_ui_widgets(window)
+            self.refresh_ui()
+            self._write_ui_log("SUCCESS: DELEECH UI attached to main window.")
+        except Exception as e:
+            self.ui_page = None
+            self.treeview = None
+            import traceback
+            err = traceback.format_exc()
+            self.log("Failed to initialize DELEECH UI tab: %s", err)
+            self._write_ui_log(f"ERROR in _setup_ui:\n{err}")
+        return False
+
+    @staticmethod
+    def _pack_widget(container, widget, expand=False, fill=False, padding=0):
+        if hasattr(container, "append"):
+            if expand:
+                widget.set_hexpand(True)
+                widget.set_vexpand(True)
+            container.append(widget)
+        else:
+            container.pack_start(widget, expand, fill, padding)
+
+    def _create_ui_widgets(self, window):
+        from gi.repository import Gtk
+        from pynicotine.gtkgui.widgets.treeview import TreeView
+
+        self.ui_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.ui_page.id = "deleech"
+        self.ui_page.content = self.ui_page
+        self.ui_page.set_visible(True)
+
+        page_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        page_container.set_hexpand(True)
+        page_container.set_vexpand(True)
+        page_container.set_margin_top(6)
+        page_container.set_margin_bottom(6)
+        page_container.set_margin_start(6)
+        page_container.set_margin_end(6)
+        page_container.set_visible(True)
+        self._pack_widget(self.ui_page, page_container, expand=True, fill=True)
+
+        # Toolbar hierarchy required by MainWindow.show_header_bar / show_toolbar
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        toolbar.set_visible(False)
+
+        toolbar_content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        toolbar_content.set_hexpand(True)
+        toolbar_content.set_margin_top(6)
+        toolbar_content.set_margin_bottom(6)
+        toolbar_content.set_margin_start(6)
+        toolbar_content.set_margin_end(6)
+        toolbar_content.set_visible(True)
+        self._pack_widget(toolbar, toolbar_content, expand=True, fill=True)
+
+        toolbar_start_content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        toolbar_start_content.set_halign(Gtk.Align.START)
+        toolbar_start_content.set_hexpand(True)
+        toolbar_start_content.set_valign(Gtk.Align.CENTER)
+        toolbar_start_content.set_visible(True)
+        self._pack_widget(toolbar_content, toolbar_start_content, expand=True, fill=True)
+
+        self.filter_entry = Gtk.Entry()
+        self.filter_entry.set_placeholder_text("Filter leechers...")
+        self.filter_entry.set_width_chars(25)
+        self.filter_entry.connect("changed", self._on_filter_changed)
+        self._pack_widget(toolbar_start_content, self.filter_entry)
+
+        toolbar_end_content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        toolbar_end_content.set_valign(Gtk.Align.CENTER)
+        toolbar_end_content.set_visible(True)
+        self._pack_widget(toolbar_content, toolbar_end_content)
+
+        btn_refresh = Gtk.Button(label="Refresh")
+        btn_refresh.connect("clicked", self._on_refresh_clicked)
+        self._pack_widget(toolbar_end_content, btn_refresh)
+
+        btn_browse = Gtk.Button(label="Browse Shares")
+        btn_browse.connect("clicked", self._on_browse_clicked)
+        self._pack_widget(toolbar_end_content, btn_browse)
+
+        btn_unban = Gtk.Button(label="Unban Selected")
+        btn_unban.connect("clicked", self._on_unban_clicked)
+        self._pack_widget(toolbar_end_content, btn_unban)
+
+        btn_reset = Gtk.Button(label="Reset Strikes")
+        btn_reset.connect("clicked", self._on_reset_clicked)
+        self._pack_widget(toolbar_end_content, btn_reset)
+
+        # Toolbar is the first child of page_container
+        self._pack_widget(page_container, toolbar)
+
+        # Status summary label
+        self.stats_label = Gtk.Label(label="DELEECH: Initializing monitor...")
+        self.stats_label.set_halign(Gtk.Align.START)
+        self._pack_widget(page_container, self.stats_label)
+
+        # ScrolledWindow & TreeView
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+
+        columns = {
+            "user": {
+                "column_type": "text",
+                "title": "Leecher",
+                "width": 150,
+                "default_sort_type": "ascending",
+                "iterator_key": True,
+            },
+            "status": {
+                "column_type": "text",
+                "title": "Status",
+                "width": 140,
+            },
+            "strikes": {
+                "column_type": "number",
+                "title": "Strikes",
+                "width": 75,
+            },
+            "strikes_total": {
+                "column_type": "number",
+                "title": "Total Strikes",
+                "width": 95,
+            },
+            "uploaded": {
+                "column_type": "text",
+                "title": "Uploaded / Quota",
+                "width": 140,
+            },
+            "ban_expiry": {
+                "column_type": "text",
+                "title": "Ban Expiry",
+                "width": 160,
+            },
+            "unbans": {
+                "column_type": "number",
+                "title": "Unbans",
+                "width": 75,
+            },
+            "last_activity": {
+                "column_type": "text",
+                "title": "Last Activity",
+                "width": 160,
+            },
+        }
+
+        self.treeview = TreeView(
+            window=window,
+            parent=scrolled,
+            columns=columns,
+            name=None,
+            persistent_sort=False,
+            activate_row_callback=self._on_row_activated,
+        )
+
+        self._pack_widget(page_container, scrolled, expand=True, fill=True)
+
+        class DeleechTabHandler:
+            def __init__(self, page, toolbar, start_content, end_content, default_widget, treeview):
+                self.page = page
+                self.content = page
+                self.toolbar = toolbar
+                self.toolbar_start_content = start_content
+                self.toolbar_end_content = end_content
+                self.toolbar_default_widget = default_widget
+                self.treeview = treeview
+
+            def on_focus(self, *args):
+                if self.treeview and hasattr(self.treeview, "widget"):
+                    try:
+                        self.treeview.widget.grab_focus()
+                        return True
+                    except Exception:
+                        pass
+                return False
+
+            def destroy(self):
+                pass
+
+        self._tab_handler = DeleechTabHandler(
+            page=self.ui_page,
+            toolbar=toolbar,
+            start_content=toolbar_start_content,
+            end_content=toolbar_end_content,
+            default_widget=self.filter_entry,
+            treeview=self.treeview
+        )
+
+        if hasattr(window, "tabs") and isinstance(window.tabs, dict):
+            window.tabs["deleech"] = self._tab_handler
+
+        # Attach tab to main notebook
+        window.notebook.append_page(self.ui_page, "DELEECH", focus_callback=self._tab_handler.on_focus)
+        tab_label = window.notebook.get_tab_label(self.ui_page)
+        if tab_label:
+            tab_label.set_start_icon_name("security-medium-symbolic")
+            if hasattr(tab_label, "container"):
+                tab_label.container.set_visible(True)
+        window.notebook.set_tab_reorderable(self.ui_page, True)
+        if hasattr(window, "set_tab_expand"):
+            window.set_tab_expand(self.ui_page)
+        elif hasattr(window.notebook, "set_tab_expand"):
+            window.notebook.set_tab_expand(self.ui_page, True)
+        self.ui_page.set_visible(True)
+
+        # Ensure modes_visible does not hide it
+        try:
+            from pynicotine.config import config
+            if hasattr(config, "sections") and "ui" in config.sections:
+                modes_visible = config.sections["ui"].get("modes_visible")
+                if isinstance(modes_visible, dict):
+                    modes_visible["deleech"] = True
+        except Exception:
+            pass
+
+        self.log("DELEECH UI tab attached to main window.")
+
+    def _teardown_ui(self):
+        try:
+            if self.ui_page is not None:
+                window = None
+                from pynicotine.gtkgui.application import Application
+                if Application and hasattr(Application, "_instance") and Application._instance:
+                    window = getattr(Application._instance, "window", None)
+                if not window:
+                    import gc
+                    for mw in gc.get_objects():
+                        if type(mw).__name__ == "MainWindow" and getattr(mw, "notebook", None):
+                            window = mw
+                            break
+
+                if window:
+                    if getattr(window, "current_page_id", None) == "deleech":
+                        if hasattr(window, "notebook"):
+                            for i in range(window.notebook.get_n_pages()):
+                                p = window.notebook.get_nth_page(i)
+                                if getattr(p, "id", None) != "deleech":
+                                    window.notebook.set_current_page(p)
+                                    break
+
+                    if self._tab_handler:
+                        start = getattr(self._tab_handler, "toolbar_start_content", None)
+                        end = getattr(self._tab_handler, "toolbar_end_content", None)
+                        if start and hasattr(window, "header_title"):
+                            try:
+                                if start.get_parent() == window.header_title:
+                                    window.header_title.remove(start)
+                            except Exception:
+                                pass
+                        if end and hasattr(window, "header_end_container"):
+                            try:
+                                if end.get_parent() == window.header_end_container:
+                                    window.header_end_container.remove(end)
+                            except Exception:
+                                pass
+
+                    if getattr(window, "notebook", None):
+                        try:
+                            window.notebook.remove_page(self.ui_page, None)
+                        except TypeError:
+                            window.notebook.remove_page(self.ui_page)
+
+                    if hasattr(window, "tabs") and isinstance(window.tabs, dict):
+                        window.tabs.pop("deleech", None)
+
+                self.ui_page = None
+                self._tab_handler = None
+                self.treeview = None
+                self.stats_label = None
+                self.filter_entry = None
+                self._write_ui_log("DELEECH UI tab removed.")
+        except Exception as e:
+            self._write_ui_log(f"Failed to teardown DELEECH UI: {e}")
+            self.log_debug("Failed to teardown DELEECH UI: %s", e)
+
+
+    def trigger_ui_refresh(self):
+        try:
+            from gi.repository import GLib
+            GLib.idle_add(self.refresh_ui)
+        except Exception:
+            pass
+
+    def refresh_ui(self):
+        if not self.treeview or not self.ui_page:
+            return
+
+        try:
+            self.csr.execute(
+                "SELECT leecher, strikes, strikedate, is_banned, strikes_total, "
+                "laststrikedate, unban_count, ban_end_date, mb_uploaded, last_state "
+                "FROM strikes ORDER BY is_banned DESC, strikes DESC, mb_uploaded DESC"
+            )
+            db_rows = self.csr.fetchall()
+            quota_mb = self.settings.get("leecher_quota_mb", 200)
+
+            records = {}
+            total_banned = 0
+            total_mb = 0.0
+
+            for row in db_rows:
+                user, strikes, sdate, is_banned, total_s, last_sdate, unbans, ban_end, mb_up, last_st = row
+                mb_val = float(mb_up or 0.0)
+                total_mb += mb_val
+                if is_banned:
+                    total_banned += 1
+
+                if is_banned:
+                    status_str = "BANNED"
+                elif user in self.probed_users:
+                    st = self.probed_users[user]
+                    if st == "pending_ban":
+                        status_str = "Pending Ban"
+                    elif st == "check_before_ban":
+                        status_str = "Final Audit Before Ban"
+                    elif st == "leecher_exceeded_quota":
+                        status_str = "Quota Exceeded"
+                    elif st.startswith("processed_leecher"):
+                        status_str = f"Warned ({strikes} strikes)"
+                    elif st == "pending_leecher":
+                        status_str = "Warning Pending"
+                    elif st == "requesting_shares":
+                        status_str = "Auditing Shares"
+                    elif st == "okay":
+                        status_str = "Okay"
+                    else:
+                        status_str = st
+                else:
+                    status_str = last_st or (f"Warned ({strikes} strikes)" if strikes > 0 else "Inactive")
+
+                records[user] = {
+                    "user": user,
+                    "status": status_str,
+                    "strikes": strikes or 0,
+                    "strikes_total": total_s or 0,
+                    "uploaded": f"{mb_val:1.1f} / {quota_mb} MB",
+                    "ban_expiry": ban_end if is_banned and ban_end else "-",
+                    "unbans": unbans or 0,
+                    "last_activity": last_sdate or sdate or "-",
+                }
+
+            # Also display users currently being probed in this session
+            for user, st in self.probed_users.items():
+                if user not in records and st != "okay":
+                    if st == "requesting_stats":
+                        st_str = "Requesting Stats"
+                    elif st == "requesting_shares":
+                        st_str = "Auditing Shares"
+                    elif st == "pending_leecher":
+                        st_str = "Warning Pending"
+                    else:
+                        st_str = st
+                    records[user] = {
+                        "user": user,
+                        "status": st_str,
+                        "strikes": 0,
+                        "strikes_total": 0,
+                        "uploaded": f"0.0 / {quota_mb} MB",
+                        "ban_expiry": "-",
+                        "unbans": 0,
+                        "last_activity": "Active session",
+                    }
+
+            if self.stats_label:
+                filter_note = f" (filtered by '{self._filter_text}')" if self._filter_text else ""
+                self.stats_label.set_text(
+                    f"Tracked Leechers: {len(records)} | Currently Banned: {total_banned} | "
+                    f"Cumulative Upload: {total_mb:1.1f} MB{filter_note}"
+                )
+
+            self.treeview.clear()
+            filter_query = (self._filter_text or "").lower()
+
+            for user, data in records.items():
+                if filter_query and filter_query not in user.lower() and filter_query not in data["status"].lower():
+                    continue
+
+                self.treeview.add_row([
+                    str(data["user"]),
+                    str(data["status"]),
+                    str(data["strikes"]),
+                    str(data["strikes_total"]),
+                    str(data["uploaded"]),
+                    str(data["ban_expiry"]),
+                    str(data["unbans"]),
+                    str(data["last_activity"]),
+                ])
+
+        except Exception as e:
+            self.log_debug("Error updating DELEECH UI: %s", e)
+
+    def _on_filter_changed(self, entry):
+        self._filter_text = entry.get_text().strip()
+        self.refresh_ui()
+
+    def _on_refresh_clicked(self, button):
+        self.refresh_ui()
+
+    def _on_unban_clicked(self, button):
+        if not self.treeview:
+            return
+        selected = list(self.treeview.get_selected_rows())
+        if not selected:
+            return
+        for iterator in selected:
+            user = self.treeview.get_row_value(iterator, "user")
+            if user:
+                self.unstrike_leecher(user)
+        self.refresh_ui()
+
+    def _on_reset_clicked(self, button):
+        if not self.treeview:
+            return
+        selected = list(self.treeview.get_selected_rows())
+        if not selected:
+            return
+        for iterator in selected:
+            user = self.treeview.get_row_value(iterator, "user")
+            if user:
+                self.csr.execute(
+                    "UPDATE strikes SET strikes=0, strikedate=NULL, mb_uploaded=0, last_state=NULL WHERE leecher=?",
+                    [user]
+                )
+                self.conn.commit()
+                if user in self.probed_users:
+                    self.probed_users[user] = "okay"
+                self.log("%s: strikes reset via UI", user)
+        self.refresh_ui()
+
+    def _on_browse_clicked(self, button):
+        if not self.treeview:
+            return
+        selected = list(self.treeview.get_selected_rows())
+        if not selected:
+            return
+        user = self.treeview.get_row_value(selected[0], "user")
+        if user and hasattr(self.core, "userbrowse"):
+            self.core.userbrowse.browse_user(user)
+
+    def _on_row_activated(self, treeview, iterator, column_id):
+        if not self.treeview:
+            return
+        user = self.treeview.get_row_value(iterator, "user")
+        if user and hasattr(self.core, "userbrowse"):
+            self.core.userbrowse.browse_user(user)
