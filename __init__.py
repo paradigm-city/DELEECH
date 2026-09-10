@@ -167,25 +167,14 @@ class Plugin(BasePlugin):
             pass
         self.log("cleanup done")
 
-    def _write_ui_log(self, msg):
-        try:
-            log_path = os.path.join(os.path.dirname(__file__), "ui_debug.log")
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
-        except Exception:
-            pass
-
     def init(self):
-        self._write_ui_log("init() called")
         if self.settings.get("show_ui_tab", True):
             self._init_ui()
 
     def disable(self):
-        self._write_ui_log("disable() called")
         self._teardown_ui()
 
     def unloaded_notification(self):
-        self._write_ui_log("unloaded_notification() called")
         self._teardown_ui()
 
     def dbinit(self):
@@ -247,7 +236,6 @@ class Plugin(BasePlugin):
         self.dbinit()
         self._compile_banned_patterns()
 
-        self._write_ui_log(f"loaded_notification() called, show_ui_tab={self.settings.get('show_ui_tab', True)}")
         if self.settings.get("show_ui_tab", True):
             self._init_ui()
 
@@ -677,11 +665,9 @@ class Plugin(BasePlugin):
         if self.ui_page is not None:
             return
         try:
-            self._write_ui_log("_init_ui() scheduled via GLib.idle_add")
             from gi.repository import GLib
             GLib.idle_add(self._setup_ui)
         except Exception as e:
-            self._write_ui_log(f"_init_ui() skipped/failed: {e}")
             self.log_debug("UI initialization skipped: %s", e)
 
     def _setup_ui(self):
@@ -689,6 +675,7 @@ class Plugin(BasePlugin):
             from gi.repository import GLib, Gio
             import pynicotine.gtkgui.application as app_module
 
+            window = None
             app = getattr(app_module, "_instance", None)
             if not app and hasattr(app_module, "Application"):
                 app = getattr(app_module.Application, "_instance", None)
@@ -698,52 +685,34 @@ class Plugin(BasePlugin):
                 except Exception:
                     pass
 
-            self._write_ui_log(f"DEBUG app={app}, type={type(app).__name__ if app else None}")
-            app_win = getattr(app, "window", None) if app else None
-            self._write_ui_log(f"DEBUG app.window={app_win}, type={type(app_win).__name__ if app_win else None}")
+            if app:
+                w = getattr(app, "window", None)
+                if w and getattr(w, "notebook", None):
+                    window = w
 
-            if app and hasattr(app, "get_windows"):
-                wins = app.get_windows()
-                self._write_ui_log(f"DEBUG get_windows count={len(wins)}")
-                for idx, w in enumerate(wins):
-                    w_type = type(w).__name__
-                    has_nb = hasattr(w, "notebook")
-                    nb_val = getattr(w, "notebook", None)
-                    nb_type = type(nb_val).__name__ if nb_val else None
-                    matching_attrs = [x for x in dir(w) if any(k in x.lower() for k in ["note", "page", "tab", "main"])]
-                    self._write_ui_log(f"DEBUG win[{idx}]: type={w_type}, has_notebook={has_nb}, nb_type={nb_type}, matching_attrs={matching_attrs}")
-
-            import gc
-            main_windows = [obj for obj in gc.get_objects() if type(obj).__name__ == "MainWindow"]
-            self._write_ui_log(f"DEBUG gc found MainWindows: {len(main_windows)}")
-            for idx, mw in enumerate(main_windows):
-                has_nb = hasattr(mw, "notebook")
-                nb = getattr(mw, "notebook", None)
-                self._write_ui_log(f"DEBUG MainWindow[{idx}]: id={hex(id(mw))}, has_notebook={has_nb}, nb={type(nb).__name__ if nb else None}")
-                if has_nb and nb:
-                    window = mw
-                    self._write_ui_log(f"DEBUG using MainWindow from gc: {mw}")
-                    break
+            if not window:
+                import gc
+                for mw in gc.get_objects():
+                    if type(mw).__name__ == "MainWindow" and getattr(mw, "notebook", None):
+                        window = mw
+                        break
 
             if not window or not getattr(window, "notebook", None):
-                self._write_ui_log(f"window or notebook not ready yet (window={window}, notebook={getattr(window, 'notebook', None)}), retrying in 500ms...")
                 GLib.timeout_add(500, self._setup_ui)
                 return False
 
             if self.ui_page is not None:
-                self._write_ui_log("ui_page is already initialized, skipping.")
                 return False
 
             self._create_ui_widgets(window)
             self.refresh_ui()
-            self._write_ui_log("SUCCESS: DELEECH UI attached to main window.")
+            self.log_debug("DELEECH UI attached to main window.")
         except Exception as e:
             self.ui_page = None
             self.treeview = None
             import traceback
             err = traceback.format_exc()
             self.log("Failed to initialize DELEECH UI tab: %s", err)
-            self._write_ui_log(f"ERROR in _setup_ui:\n{err}")
         return False
 
     @staticmethod
@@ -1048,9 +1017,8 @@ class Plugin(BasePlugin):
                 self.treeview = None
                 self.stats_label = None
                 self.filter_entry = None
-                self._write_ui_log("DELEECH UI tab removed.")
+                self.log_debug("DELEECH UI tab removed.")
         except Exception as e:
-            self._write_ui_log(f"Failed to teardown DELEECH UI: {e}")
             self.log_debug("Failed to teardown DELEECH UI: %s", e)
 
     def _on_sort_column_changed(self, sortable):
