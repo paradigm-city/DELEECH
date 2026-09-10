@@ -240,6 +240,21 @@ class Plugin(BasePlugin):
 
     def is_suspect_user(self, user, num_files, num_folders, shared_size=0, source="server"):
         """Evaluates whether share numbers warrant suspicion and deeper inspection."""
+        try:
+            num_files = int(num_files or 0)
+        except (TypeError, ValueError):
+            num_files = 0
+
+        try:
+            num_folders = int(num_folders or 0)
+        except (TypeError, ValueError):
+            num_folders = 0
+
+        try:
+            shared_size = int(shared_size or 0)
+        except (TypeError, ValueError):
+            shared_size = 0
+
         folders = max(num_folders, 1)
         files = max(num_files, 0)
         ratio = files / folders
@@ -309,12 +324,30 @@ class Plugin(BasePlugin):
             # User was already accepted previously, nothing to do
             return
 
+        try:
+            num_files = int(num_files or 0)
+        except (TypeError, ValueError):
+            num_files = 0
+
+        try:
+            num_folders = int(num_folders or 0)
+        except (TypeError, ValueError):
+            num_folders = 0
+
+        try:
+            shared_size = int(shared_size or 0)
+        except (TypeError, ValueError):
+            shared_size = 0
+
+        source = str(source or "server")
+
         if (self.probed_users[user] == "requesting_shares" or self.probed_users[user] == "check_before_ban") and source != "peer":
             # Waiting for stats from peer, but received stats from server. Ignore.
             return
 
-        self.log_debug("Checking user: %s (%s, %d files, %d folders, %d bytes)",
-                       (user, source, num_files, num_folders, shared_size))
+        size_desc = f"{shared_size / (1024 * 1024):1.1f} MB" if shared_size > 0 else "size unknown"
+        self.log_debug("Checking user: %s (%s, %d files, %d folders, %s)",
+                       (user, source, num_files, num_folders, size_desc))
 
         meets_counts = (num_files >= self.settings["num_files"] and num_folders >= self.settings["num_folders"])
 
@@ -446,12 +479,29 @@ class Plugin(BasePlugin):
                     self.unstrike_leecher(leecher)
 
     def user_stats_notification(self, user, stats):
+        try:
+            num_files = int(stats.get("files") or 0)
+        except (TypeError, ValueError):
+            num_files = 0
+
+        try:
+            num_folders = int(stats.get("dirs") or 0)
+        except (TypeError, ValueError):
+            num_folders = 0
+
+        try:
+            shared_size = int(stats.get("shared_size") or 0)
+        except (TypeError, ValueError):
+            shared_size = 0
+
+        source = stats.get("source") or "server"
+
         self.check_user(
             user,
-            num_files=stats.get("files", 0),
-            num_folders=stats.get("dirs", 0),
-            shared_size=stats.get("shared_size", 0),
-            source=stats.get("source", "server")
+            num_files=num_files,
+            num_folders=num_folders,
+            shared_size=shared_size,
+            source=source
         )
 
     def strike_leecher(self, user):
