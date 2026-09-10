@@ -31,7 +31,7 @@ The plugin hooks into Nicotine+ upload and user-stat notifications and applies a
 2. DELEECH requests or refreshes that user's share statistics.
 3. The user is accepted if they meet the configured minimum number of shared files **and** shared folders.
 4. If the user does not meet the threshold, DELEECH marks them as a leecher candidate.
-5. After an upload finishes, the plugin can:
+5. When an upload starts, the plugin can:
    - send a warning message,
    - increment a strike counter,
    - repeat warnings after a configurable number of uploads,
@@ -196,7 +196,7 @@ The plugin is built around Nicotine+ plugin callbacks and APIs such as:
 
 - `loaded_notification()`
 - `upload_queued_notification()`
-- `upload_finished_notification()`
+- `upload_started_notification()`
 - `user_stats_notification()`
 - `user_status_notification()`
 - `core.users.request_user_stats()`
@@ -211,7 +211,7 @@ So this is not a standalone Python utility; it is a Nicotine+ plugin that depend
 ## Known limitations
 
 1. **Buddies are exempted** from enforcement even if they do not meet the configured share thresholds.
-2. **Warning/banning is post-transfer oriented.** In the common path, the plugin lets the current transfer complete, then warns or escalates afterward.
+2. **Interception occurs at transfer start.** Warnings, strikes, and bans take effect when an upload starts (`upload_started_notification`), stopping repeat offenders before they download files.
 3. **Suspicious-user heuristics are opinionated.** Some legitimate users with round-number statistics may be forced into additional verification.
 4. **The plugin depends on filesystem access to the transferred file path** in order to calculate the completed upload size.
 
@@ -223,7 +223,7 @@ From `PLUGININFO`:
 
 - **Name:** `DELEECH`
 - **Description:** `Leech detector SQLite version`
-- **Version:** `2026-03-20r00`
+- **Version:** `2026-09-10r00`
 - **Author:** `Paradigm_city`
 
 ---
