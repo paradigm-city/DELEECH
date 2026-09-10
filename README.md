@@ -47,26 +47,39 @@ The plugin also attempts to verify suspicious share counts by requesting the use
 
 ### Minimum share requirements
 
-A user is considered acceptable when both conditions are true:
+A user is considered acceptable when all configured conditions are true:
 
-- `num_files >= configured minimum`
-- `num_folders >= configured minimum`
+- `num_files >= configured minimum` (default: 60)
+- `num_folders >= configured minimum` (default: 1)
+- `shared_size_mb >= min_shared_mb` (default: 50 MB)
+- `avg_file_size_kb >= min_avg_file_kb` (default: 500 KB)
 
 Default values:
 
 - **60 files**
 - **1 public folder**
+- **50 MB total shared size**
+- **500 KB average file size**
 
 ### Suspicious-user heuristics
 
-Even if a user appears to meet the minimum threshold, the plugin treats certain share counts as suspicious and forces a deeper check. In the current code, a user is flagged as suspicious when one of the following is true:
+Even if a user appears to meet the minimum threshold according to Soulseek server stats, the plugin treats certain patterns as suspicious and triggers a deep peer share verification (`core.userbrowse.request_user_shares`).
 
-- exactly `1000 files / 50 folders`
-- more than `2000 files per folder`
-- file count is evenly divisible by folder count **and** by `50`
-- file count is divisible by `100`
+Matching a suspicious pattern on server stats is **only a suspicion trigger**: it forces direct inspection of the peer's actual shares and does **not** convict or ban the user. If the peer's actual shares meet the file, folder, and size requirements, they are cleared.
 
-These heuristics are intended to catch obviously synthetic or stale stats.
+The plugin checks against curated known scraper/bot fake share profiles:
+
+- `(1000, 50)` — Classic 20:1 Soulseek bot/scraper hardcoded profile
+- `(2000, 100)` — 20:1 scaled bot profile
+- `(1500, 75)` — 20:1 scaled bot profile
+- `(500, 25)` — 20:1 minimal scraper profile
+- `(3000, 150)` — 20:1 extended scraper profile
+- `(100, 50)` — Community-reported 2:1 throwaway Spotify bot pattern
+- `(500, 50)` — 10:1 round profile
+- `(250, 25)` — 10:1 round profile
+- `(100, 10)` — 10:1 minimal fake share profile
+- More folders than files when `num_folders > 5` (empty folder dummy generation)
+- More than `2000 files per folder` (unusually flat single-folder dump)
 
 ### Warnings and repeat cycle
 
@@ -76,7 +89,7 @@ When a user is identified as a leecher, DELEECH can send a private message. That
 - `%folders%`
 - `%leecher%`
 
-Warnings are not necessarily sent after every single upload. The warning frequency is controlled by the `msg_repeat_after` parameter. The plugin uses an internal state machine such as `pending_leecher`, `processed_leecher<nn>`, `pending_ban`, and `check_before_ban` to control when the message is repeated.
+Warnings are sent when an upload starts. The warning frequency is controlled by the `msg_repeat_after` parameter. The plugin uses an internal state machine such as `pending_leecher`, `processed_leecher<nn>`, `pending_ban`, and `check_before_ban` to control when the message is repeated.
 
 ### Automatic bans
 
@@ -94,15 +107,28 @@ The current implementation bans when:
 
 Before the final ban in the normal warning path, DELEECH performs one more share verification request.
 
-### Ban duration growth
+### Ban duration growth (Fibonacci & Exponential)
 
-Ban length escalates with the number of prior unbans using this formula:
+Ban length escalates with recidivism (`unban_count`). By default, DELEECH uses a **Fibonacci progression**:
+
+| Offense | Ban Duration (Fibonacci) |
+|---|---|
+| 1st Ban | **1 day** |
+| 2nd Ban | **2 days** |
+| 3rd Ban | **3 days** |
+| 4th Ban | **5 days** |
+| 5th Ban | **8 days** |
+| 6th Ban | **13 days** |
+| 7th Ban | **21 days** |
+| 8th Ban | **34 days** |
+| 9th Ban | **55 days** |
+| 10th Ban | **89 days** |
+
+The progression mode is configurable via `ban_progression` (`fibonacci` or `exponential`). In exponential mode:
 
 ```text
 ban_days = int(10 ** (unban_count / 5))
 ```
-
-That means repeat offenders are banned for increasingly longer periods.
 
 ### Automatic unban
 
@@ -134,6 +160,9 @@ The plugin defines the following user-facing settings:
 | `leecher_quota_mb` | `200` | Allowed downloaded volume before forced ban |
 | `num_files` | `60` | Minimum required shared files |
 | `num_folders` | `1` | Minimum required shared public folders |
+| `min_shared_mb` | `50` | Minimum total shared data in MB (0 to disable) |
+| `min_avg_file_kb` | `500` | Minimum average file size in KB to catch dummy files |
+| `ban_progression` | `fibonacci` | Ban escalation formula (`fibonacci` or `exponential`) |
 | `debug_log` | `False` | Enables debug logging |
 
 ---

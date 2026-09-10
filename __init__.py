@@ -5,7 +5,7 @@
 # Filename: __init__.py
 # Author: paradigm_city
 # Description: DELEECH plugin for nicotine+
-# Version: 0.5
+# Version: 0.6
 # Schema version: 3
 
 from pynicotine.pluginsystem import BasePlugin
@@ -20,6 +20,20 @@ class Plugin(BasePlugin):
     PLACEHOLDERS = {
         "%files%": "num_files",
         "%folders%": "num_folders"
+    }
+
+    # Curated set of known scraper / bot / fake-share patterns (files, folders)
+    # Matching on server stats triggers deep peer share investigation without immediate conviction.
+    SUSPICIOUS_PATTERNS = {
+        (1000, 50),   # Classic 20:1 Soulseek bot/scraper hardcoded profile
+        (2000, 100),  # 20:1 scaled bot profile
+        (1500, 75),   # 20:1 scaled bot profile
+        (500, 25),    # 20:1 minimal scraper profile
+        (3000, 150),  # 20:1 extended scraper profile
+        (100, 50),    # Community-reported 2:1 throwaway Spotify bot pattern
+        (500, 50),    # 10:1 round profile
+        (250, 25),    # 10:1 round profile
+        (100, 10),    # 10:1 minimal fake share profile
     }
 
     def __init__(self, *args, **kwargs):
@@ -37,6 +51,9 @@ class Plugin(BasePlugin):
             "leecher_quota_mb": 200,
             "num_files": 60,
             "num_folders": 1,
+            "min_shared_mb": 50,
+            "min_avg_file_kb": 500,
+            "ban_progression": "fibonacci",
             "debug_log": False,
             "schema_version": 1,
             "banned_name_patterns": "^LeecherNameHere"
@@ -83,6 +100,19 @@ class Plugin(BasePlugin):
             "num_folders": {
                 "description": "Minimum number of shared folders required:",
                 "type": "int", "minimum": 1
+            },
+            "min_shared_mb": {
+                "description": "Minimum total shared data in MB (0 to disable):",
+                "type": "int", "minimum": 0, "stepsize": 25
+            },
+            "min_avg_file_kb": {
+                "description": "Minimum average file size in KB to detect dummy files (0 to disable):",
+                "type": "int", "minimum": 0, "stepsize": 100
+            },
+            "ban_progression": {
+                "description": "Ban duration escalation formula:",
+                "type": "dropdown",
+                "options": ["fibonacci", "exponential"]
             },
             "debug_log": {
                 "description": "Debug logging",
@@ -208,24 +238,69 @@ class Plugin(BasePlugin):
         if before.get("banned_name_patterns") != after.get("banned_name_patterns"):
             self._compile_banned_patterns()
 
-    def is_suspect_user(self, user, num_files, num_folders, source="server"):
+    def is_suspect_user(self, user, num_files, num_folders, shared_size=0, source="server"):
+        """Evaluates whether share numbers warrant suspicion and deeper inspection."""
         folders = max(num_folders, 1)
-        ratio = num_files / folders
-        if num_files == 1000 and num_folders == 50:
-            return True
-        if ratio <= 1.3:
-            return True
-        if ratio > 2000:
-            return True
-        if (num_files % folders == 0) and (num_files % 50 == 0):
-            return True
+        files = max(num_files, 0)
+        ratio = files / folders
+
+        # Heuristic A: Dummy file / volume validation (applicable to both server and peer stats)
+        if shared_size > 0:
+            min_mb = self.settings.get("min_shared_mb", 0)
+            if min_mb > 0 and (shared_size / (1024 * 1024)) < min_mb:
+                self.log_debug("%s: suspect, total shared volume too small (%1.1f MB < %d MB)",
+                               (user, shared_size / (1024 * 1024), min_mb))
+                return True
+
+            min_avg_kb = self.settings.get("min_avg_file_kb", 0)
+            if min_avg_kb > 0 and files > 0:
+                avg_kb = (shared_size / files) / 1024
+                if avg_kb < min_avg_kb:
+                    self.log_debug("%s: suspect, average file size too small (%1.1f KB < %d KB)",
+                                   (user, avg_kb, min_avg_kb))
+                    return True
+
+        # Heuristics D & B: Server-side statistical suspicion triggers
+        # Only used when source == "server" to force a peer share request; never directly convicts.
+        if source == "server":
+            # Match against curated suspicious patterns (e.g., 1000/50, 2000/100, 500/25, 100/50)
+            if (num_files, num_folders) in self.SUSPICIOUS_PATTERNS:
+                self.log_debug("%s: matches known suspicious pattern (%d files, %d folders)",
+                               (user, num_files, num_folders))
+                return True
+
+            # More folders than files when folders > 5 indicates empty/dummy directories
+            if folders > 5 and files < folders:
+                self.log_debug("%s: suspect ratio, more folders than files (%d files in %d folders)",
+                               (user, files, folders))
+                return True
+
+            # Flat single-folder dump anomaly
+            if ratio > 2000:
+                self.log_debug("%s: suspect ratio, dense single-folder dump (> 2000 files/folder)", user)
+                return True
+
         return False
 
-    def bans_2_days(self, bans):
-        days = 10 ** (float(bans) / 5)
-        return int(days)
+    @staticmethod
+    def _fibonacci(n):
+        """Returns the n-th Fibonacci penalty duration in days (n=1 -> 1, n=2 -> 2, n=3 -> 3, n=4 -> 5...)."""
+        if n <= 1:
+            return 1
+        a, b = 1, 2
+        for _ in range(2, n):
+            a, b = b, a + b
+        return b
 
-    def check_user(self, user, num_files, num_folders, source="server"):
+    def bans_2_days(self, bans):
+        mode = self.settings.get("ban_progression", "fibonacci")
+        if mode == "exponential":
+            days = 10 ** (float(bans) / 5)
+            return int(days)
+        # Default: Fibonacci progression
+        return self._fibonacci(int(bans))
+
+    def check_user(self, user, num_files, num_folders, shared_size=0, source="server"):
         if user not in self.probed_users:
             # We are not watching this user
             return
@@ -238,15 +313,36 @@ class Plugin(BasePlugin):
             # Waiting for stats from peer, but received stats from server. Ignore.
             return
 
-        self.log_debug("Checking user: %s", user)
+        self.log_debug("Checking user: %s (%s, %d files, %d folders, %d bytes)",
+                       (user, source, num_files, num_folders, shared_size))
 
-        is_user_accepted = (num_files >= self.settings["num_files"] and num_folders >= self.settings["num_folders"])
+        meets_counts = (num_files >= self.settings["num_files"] and num_folders >= self.settings["num_folders"])
 
-        if self.is_suspect_user(user, num_files, num_folders, source):
-            is_user_accepted = False
-            force_user_check = True
-            self.log_debug("%s: suspect, sharing %s files in %s folders", (user, num_files, num_folders))
+        # Validate minimum size and average size if size data is present
+        min_mb = self.settings.get("min_shared_mb", 0)
+        min_avg_kb = self.settings.get("min_avg_file_kb", 0)
+        meets_size = True
+        if shared_size > 0:
+            if min_mb > 0 and (shared_size / (1024 * 1024)) < min_mb:
+                meets_size = False
+            if min_avg_kb > 0 and num_files > 0 and ((shared_size / num_files) / 1024) < min_avg_kb:
+                meets_size = False
+
+        is_suspect = self.is_suspect_user(user, num_files, num_folders, shared_size, source)
+
+        if source == "server":
+            # On server stats: suspicion forces a deep peer share check without immediate conviction
+            if is_suspect:
+                is_user_accepted = False
+                force_user_check = True
+                self.log_debug("%s: suspect server stats, requesting peer shares to verify", user)
+            else:
+                is_user_accepted = (meets_counts and meets_size)
+                force_user_check = False
         else:
+            # On peer stats (source == "peer"): ground truth is verified directly.
+            # If the user meets file count, folder count, and size thresholds, they are cleared!
+            is_user_accepted = (meets_counts and meets_size and not is_suspect)
             force_user_check = False
 
         if is_user_accepted or user in self.core.buddies.users:
@@ -254,14 +350,16 @@ class Plugin(BasePlugin):
             self.unstrike_leecher(user)
 
             if is_user_accepted:
-                self.log_debug("%s: okay, sharing %s files in %s folders.", (user, num_files, num_folders))
+                self.log_debug("%s: okay, sharing %s files in %s folders (%s).",
+                               (user, num_files, num_folders, source))
             else:
                 self.log_debug("%s: buddy is sharing %s files in %s folders. Not complaining.",
                                (user, num_files, num_folders))
             return
         else:
             # user was not accepted or buddy - check if a ban is pending
-            self.log_debug("%s: NOT okay, sharing %s files in %s folders.", (user, num_files, num_folders))
+            self.log_debug("%s: NOT okay, sharing %s files in %s folders (%s).",
+                           (user, num_files, num_folders, source))
             if self.probed_users[user] == "check_before_ban":
                 self.log_debug("%s: arming a pending ban", user)
                 self.probed_users[user] = "pending_ban"
@@ -280,11 +378,10 @@ class Plugin(BasePlugin):
 
         if (num_files <= 0 or num_folders <= 0 or force_user_check) and self.probed_users[user] != "requesting_shares":
             # SoulseekQt only sends the number of shared files/folders to the server once on startup.
-            # Verify user's actual number of files/folders.
-            self.log_debug("%s: no shared files according to the server, requesting shares to verify…", user)
+            # Verify user's actual number of files/folders directly from peer.
+            self.log_debug("%s: verifying actual shares directly from peer…", user)
 
             self.probed_users[user] = "requesting_shares"
-            self.log_debug("%s: request shares", user)
             self.core.userbrowse.request_user_shares(user)
             return
 
@@ -349,7 +446,13 @@ class Plugin(BasePlugin):
                     self.unstrike_leecher(leecher)
 
     def user_stats_notification(self, user, stats):
-        self.check_user(user, num_files=stats["files"], num_folders=stats["dirs"], source=stats["source"])
+        self.check_user(
+            user,
+            num_files=stats.get("files", 0),
+            num_folders=stats.get("dirs", 0),
+            shared_size=stats.get("shared_size", 0),
+            source=stats.get("source", "server")
+        )
 
     def strike_leecher(self, user):
         if self.probed_users[user].startswith("processed_leecher"):
