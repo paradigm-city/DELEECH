@@ -54,6 +54,8 @@ class Plugin(BasePlugin):
             "min_shared_mb": 50,
             "min_avg_file_kb": 500,
             "ban_progression": "fibonacci",
+            "sort_column": "strikes",
+            "sort_order": "descending",
             "show_ui_tab": True,
             "debug_log": False,
             "schema_version": 1,
@@ -833,6 +835,12 @@ class Plugin(BasePlugin):
         scrolled.set_vexpand(True)
         scrolled.set_hexpand(True)
 
+        try:
+            from gi.repository import GObject
+            has_gobject = True
+        except ImportError:
+            has_gobject = False
+
         columns = {
             "user": {
                 "column_type": "text",
@@ -850,16 +858,20 @@ class Plugin(BasePlugin):
                 "column_type": "number",
                 "title": "Strikes",
                 "width": 75,
+                "sort_column": "strikes_data" if has_gobject else "strikes",
+                "default_sort_type": "descending",
             },
             "strikes_total": {
                 "column_type": "number",
                 "title": "Total Strikes",
                 "width": 95,
+                "sort_column": "strikes_total_data" if has_gobject else "strikes_total",
             },
             "uploaded": {
                 "column_type": "text",
                 "title": "Uploaded / Quota",
                 "width": 140,
+                "sort_column": "uploaded_data" if has_gobject else "uploaded",
             },
             "ban_expiry": {
                 "column_type": "text",
@@ -870,6 +882,7 @@ class Plugin(BasePlugin):
                 "column_type": "number",
                 "title": "Unbans",
                 "width": 75,
+                "sort_column": "unbans_data" if has_gobject else "unbans",
             },
             "last_activity": {
                 "column_type": "text",
@@ -878,14 +891,41 @@ class Plugin(BasePlugin):
             },
         }
 
+        if has_gobject:
+            columns["strikes_data"] = {"data_type": GObject.TYPE_UINT}
+            columns["strikes_total_data"] = {"data_type": GObject.TYPE_UINT}
+            columns["uploaded_data"] = {"data_type": GObject.TYPE_UINT64}
+            columns["unbans_data"] = {"data_type": GObject.TYPE_UINT}
+
+        # Seed and ensure config.sections["columns"]["deleech"] exists for persistence
+        try:
+            from pynicotine.config import config
+            if hasattr(config, "sections") and "columns" in config.sections:
+                col_conf = config.sections["columns"].setdefault("deleech", {})
+                has_sort = any("sort" in props for props in col_conf.values() if isinstance(props, dict))
+                if not has_sort:
+                    saved_col = self.settings.get("sort_column", "strikes")
+                    saved_order = self.settings.get("sort_order", "descending")
+                    if saved_col:
+                        col_conf.setdefault(saved_col, {})["sort"] = saved_order
+        except Exception:
+            pass
+
         self.treeview = TreeView(
             window=window,
             parent=scrolled,
             columns=columns,
-            name=None,
-            persistent_sort=False,
+            name="deleech",
+            multi_select=True,
+            persistent_sort=True,
             activate_row_callback=self._on_row_activated,
         )
+
+        if hasattr(self.treeview, "model") and self.treeview.model:
+            try:
+                self.treeview.model.connect("sort-column-changed", self._on_sort_column_changed)
+            except Exception:
+                pass
 
         self._pack_widget(page_container, scrolled, expand=True, fill=True)
 
@@ -997,6 +1037,12 @@ class Plugin(BasePlugin):
                     if hasattr(window, "tabs") and isinstance(window.tabs, dict):
                         window.tabs.pop("deleech", None)
 
+                if self.treeview and hasattr(self.treeview, "save_columns"):
+                    try:
+                        self.treeview.save_columns()
+                    except Exception:
+                        pass
+
                 self.ui_page = None
                 self._tab_handler = None
                 self.treeview = None
@@ -1006,6 +1052,21 @@ class Plugin(BasePlugin):
         except Exception as e:
             self._write_ui_log(f"Failed to teardown DELEECH UI: {e}")
             self.log_debug("Failed to teardown DELEECH UI: %s", e)
+
+    def _on_sort_column_changed(self, sortable):
+        try:
+            from gi.repository import Gtk
+            sort_col_id, sort_type = sortable.get_sort_column_id()
+            if self.treeview and hasattr(self.treeview, "_column_ids"):
+                for name, idx in self.treeview._column_ids.items():
+                    if idx == sort_col_id:
+                        visible_name = name[:-5] if name.endswith("_data") else name
+                        order_str = "descending" if sort_type == Gtk.SortType.DESCENDING else "ascending"
+                        self.settings["sort_column"] = visible_name
+                        self.settings["sort_order"] = order_str
+                        break
+        except Exception as e:
+            self.log_debug("Failed to record sort column change: %s", e)
 
 
     def trigger_ui_refresh(self):
@@ -1068,6 +1129,7 @@ class Plugin(BasePlugin):
                     "strikes": strikes or 0,
                     "strikes_total": total_s or 0,
                     "uploaded": f"{mb_val:1.1f} / {quota_mb} MB",
+                    "uploaded_raw_kb": int(mb_val * 1024),
                     "ban_expiry": ban_end if is_banned and ban_end else "-",
                     "unbans": unbans or 0,
                     "last_activity": last_sdate or sdate or "-",
@@ -1090,6 +1152,7 @@ class Plugin(BasePlugin):
                         "strikes": 0,
                         "strikes_total": 0,
                         "uploaded": f"0.0 / {quota_mb} MB",
+                        "uploaded_raw_kb": 0,
                         "ban_expiry": "-",
                         "unbans": 0,
                         "last_activity": "Active session",
@@ -1102,14 +1165,29 @@ class Plugin(BasePlugin):
                     f"Cumulative Upload: {total_mb:1.1f} MB{filter_note}"
                 )
 
-            self.treeview.clear()
+            # 1. Capture currently selected user(s)
+            selected_users = []
+            for iterator in self.treeview.get_selected_rows():
+                u = self.treeview.get_row_value(iterator, "user")
+                if u:
+                    selected_users.append(u)
+
             filter_query = (self._filter_text or "").lower()
+            visible_users = set()
+            column_ids = [
+                "user", "status", "strikes", "strikes_total",
+                "uploaded", "ban_expiry", "unbans", "last_activity"
+            ]
+            has_hidden = hasattr(self.treeview, "_column_ids") and "strikes_data" in self.treeview._column_ids
+            if has_hidden:
+                column_ids.extend(["strikes_data", "strikes_total_data", "uploaded_data", "unbans_data"])
 
             for user, data in records.items():
                 if filter_query and filter_query not in user.lower() and filter_query not in data["status"].lower():
                     continue
 
-                self.treeview.add_row([
+                visible_users.add(user)
+                row_values = [
                     str(data["user"]),
                     str(data["status"]),
                     str(data["strikes"]),
@@ -1118,7 +1196,33 @@ class Plugin(BasePlugin):
                     str(data["ban_expiry"]),
                     str(data["unbans"]),
                     str(data["last_activity"]),
-                ])
+                ]
+                if has_hidden:
+                    row_values.extend([
+                        int(data.get("strikes", 0)),
+                        int(data.get("strikes_total", 0)),
+                        int(data.get("uploaded_raw_kb", 0)),
+                        int(data.get("unbans", 0)),
+                    ])
+
+                if user in self.treeview.iterators:
+                    iterator = self.treeview.iterators[user]
+                    self.treeview.set_row_values(iterator, column_ids, row_values)
+                else:
+                    self.treeview.add_row(row_values, select_row=False)
+
+            # 2. Remove rows that are no longer visible (e.g. filtered out or pruned)
+            for user in list(self.treeview.iterators.keys()):
+                if user not in visible_users:
+                    iterator = self.treeview.iterators[user]
+                    self.treeview.remove_row(iterator)
+
+            # 3. Restore selection without scrolling or jumping viewport
+            if selected_users:
+                for u in selected_users:
+                    if u in self.treeview.iterators:
+                        self.treeview.select_row(self.treeview.iterators[u], should_scroll=False)
+                        break
 
         except Exception as e:
             self.log_debug("Error updating DELEECH UI: %s", e)
