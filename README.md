@@ -163,7 +163,24 @@ The plugin defines the following user-facing settings:
 | `min_shared_mb` | `50` | Minimum total shared data in MB (0 to disable) |
 | `min_avg_file_kb` | `500` | Minimum average file size in KB to catch dummy files |
 | `ban_progression` | `fibonacci` | Ban escalation formula (`fibonacci` or `exponential`) |
+| `show_ui_tab` | `True` | Displays dedicated DELEECH Monitor tab in main window |
 | `debug_log` | `False` | Enables debug logging |
+
+---
+
+## DELEECH Monitor Tab (UI Transparency)
+
+When `show_ui_tab` is enabled, DELEECH embeds a dedicated tab directly into the Nicotine+ main window.
+
+### Features
+- **Live User Monitor**: Visual `TreeView` displaying tracked leechers, current status (`BANNED`, `Pending Ban`, `Warned`, `Auditing Shares`), active/lifetime strikes, uploaded data vs. quota (`mb_uploaded / quota_mb`), ban expiration date, unban count, and last strike timestamp.
+- **Search & Filter**: Real-time username filtering via a search entry and status dropdown filter (`All`, `BANNED`, `Active Leechers`).
+- **Interactive Management Actions**:
+  - **Refresh**: Re-queries the SQLite database and updates the view instantly.
+  - **Reset Strikes**: Clears active strikes and warnings for the selected user, giving them a fresh start.
+  - **Unban Selected**: Immediately lifts the network filter ban for the selected user and resets ban expiry.
+  - **Browse Shares**: Opens Nicotine+'s native share browser for the selected user to manually inspect their files.
+- **Headless & Cross-GTK Resilience**: Dispatches UI updates via `GLib.idle_add` for thread safety, safely degrades when running in CLI/headless mode, and adapts to both GTK 3 and GTK 4 container models.
 
 ---
 
