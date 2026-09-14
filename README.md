@@ -214,6 +214,25 @@ The plugin also resets stale strikes if the last strike is older than **90 days*
 
 ---
 
+## Monitor Window & GUI Integration
+
+DELEECH includes an integrated GTK4 / Adwaita monitor tab docked directly into the main Nicotine+ window notebook.
+
+### Features
+- **Live Surveillance**: Shows real-time leecher states (`Warned`, `Pending Ban`, `Auditing Shares`, `BANNED`, `Quota Exceeded`).
+- **Metrics Summary**: Live counter for tracked peers, active bans, and cumulative bandwidth consumed by leechers.
+- **Accurate Numeric Sorting**: Backed by typed GObject columns (`UINT`, `UINT64`) so strikes, upload sizes, and unban counts sort accurately instead of alphabetically.
+- **Persistent Preferences**: Column layouts, widths, and sort order are saved across restarts.
+- **Interactive Controls**:
+  - Live search filter by username or status.
+  - Multi-select manual unban (`Unban Selected`).
+  - Multi-select strike forgiveness (`Reset Strikes`).
+  - Direct share browser access (`Browse Shares` or double-clicking any row).
+
+For complete technical documentation, widget hierarchy, sequence diagrams, and lifecycle specifications, see [MONITOR.md](MONITOR.md).
+
+---
+
 ## Installation
 
 ### Option 1: manual install
