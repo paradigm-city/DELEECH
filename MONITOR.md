@@ -448,3 +448,4 @@ The monitor tab can be toggled or configured in the plugin settings (`PLUGININFO
   - Preserves sort orientation (`"ascending"` or `"descending"`).
 - **`leecher_quota_mb`** (Integer, default: `200`):
   - Displayed in the `Uploaded / Quota` column as the maximum threshold before an automatic quota ban triggers.
+
