@@ -175,6 +175,7 @@ class Plugin(BasePlugin):
         self._teardown_ui()
 
     def dbinit(self):
+        self.log_debug("init db...")
         sql = "CREATE TABLE IF NOT EXISTS strikes(" \
               "leecher TEXT NOT NULL UNIQUE, " \
               "strikes INTEGER, " \
@@ -191,6 +192,7 @@ class Plugin(BasePlugin):
 
         # maintain database schema
         if self.settings["schema_version"] < 2:
+            self.log_debug("update schema to version 2")
             for sql in (
                 "alter table strikes add column mb_uploaded real default 0",
                 "alter table strikes add column last_state TEXT"
@@ -203,6 +205,7 @@ class Plugin(BasePlugin):
             self.settings["schema_version"] = 2
 
         if self.settings["schema_version"] < 3:
+            self.log_debug("update schema to version 3")
             # no changes to schema
             self.settings["schema_version"] = 3
 
@@ -492,6 +495,7 @@ class Plugin(BasePlugin):
             self.csr.execute("SELECT leecher, strikes, strikedate, ban_end_date FROM strikes where strikedate is not null and leecher=?", [user])
             rows = self.csr.fetchall()
             for leecher, strikes, strikedate, ban_end_date in rows:
+                self.log_debug("ban end date recorded: %s", [ban_end_date])
                 if ban_end_date is None:
                     end_of_ban = datetime.strptime(strikedate, '%Y-%m-%d %H:%M:%S.%f') + timedelta(days=1)
                 else:
@@ -637,6 +641,7 @@ class Plugin(BasePlugin):
             self.log_debug("%s: msgd leecher", user)
 
         elif self.probed_users[user].startswith("processed_leecher"):
+            self.log_debug("%s: %s", (user, self.probed_users[user]))
             llevel = int(self.probed_users[user][-2:])
             if llevel < self.settings["msg_repeat_after"] - 1:
                 llevel += 1
