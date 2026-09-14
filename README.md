@@ -163,6 +163,7 @@ The plugin defines the following user-facing settings:
 | `min_shared_mb` | `50` | Minimum total shared data in MB (0 to disable) |
 | `min_avg_file_kb` | `500` | Minimum average file size in KB to catch dummy files |
 | `ban_progression` | `fibonacci` | Ban escalation formula (`fibonacci` or `exponential`) |
+| `verified_cache_days` | `14` | Days to cache verified peers who meet share thresholds (0 to disable) |
 | `show_ui_tab` | `True` | Displays dedicated DELEECH Monitor tab in main window |
 | `debug_log` | `False` | Enables debug logging |
 
@@ -174,7 +175,7 @@ When `show_ui_tab` is enabled, DELEECH embeds a dedicated tab directly into the 
 
 ### Features
 - **Live User Monitor**: Visual `TreeView` displaying tracked leechers, current status (`BANNED`, `Pending Ban`, `Warned`, `Auditing Shares`), active/lifetime strikes, uploaded data vs. quota (`mb_uploaded / quota_mb`), ban expiration date, unban count, and last strike timestamp.
-- **Search & Filter**: Real-time username filtering via a search entry and status dropdown filter (`All`, `BANNED`, `Active Leechers`).
+- **Search & Filter**: Real-time username filtering via a search entry; filter text is persisted across restarts.
 - **Interactive Management Actions**:
   - **Refresh**: Re-queries the SQLite database and updates the view instantly.
   - **Reset Strikes**: Clears active strikes and warnings for the selected user, giving them a fresh start.
@@ -184,7 +185,7 @@ When `show_ui_tab` is enabled, DELEECH embeds a dedicated tab directly into the 
 
 ---
 
-## SQLite persistence
+## State Persistence & SQLite Architecture
 
 DELEECH stores its state in a local SQLite database named:
 
@@ -194,9 +195,13 @@ deleech.db
 
 The file is created in the Nicotine+ data folder returned by `config.get_user_folders()`.
 
+### Database Engine Hardening
+- **WAL Mode (`PRAGMA journal_mode = WAL`)**: Enables non-blocking, concurrent database operations, preventing UI pauses during active file transfers.
+- **Native Schema Versioning (`PRAGMA user_version = 4`)**: Embeds the migration version directly in the database header, making database upgrades independent of config file states.
+
 ### Table: `strikes`
 
-The plugin creates a single table:
+Tracks leecher history, warnings, and ban cycles:
 
 - `leecher` — username, unique
 - `strikes` — current active strike count
@@ -208,9 +213,39 @@ The plugin creates a single table:
 - `unban_date` — latest unban timestamp
 - `ban_end_date` — calculated ban expiry
 - `mb_uploaded` — total MB uploaded to this user during leecher tracking
-- `last_state` — last internal workflow state
+- `last_state` — last internal workflow state (e.g. `processed_leecher02`, `pending_ban`)
 
-The plugin also resets stale strikes if the last strike is older than **90 days**.
+The plugin resets stale strikes if the last strike is older than **90 days**.
+
+### Table: `verified_peers`
+
+Caches peers whose shared files and folders satisfy all requirements:
+
+- `user` — username, unique
+- `num_files` — verified file count
+- `num_folders` — verified public folder count
+- `shared_size_mb` — verified shared volume in MB
+- `verified_at` — timestamp of verification
+
+When a verified peer queues an upload, DELEECH recognizes them immediately within the `verified_cache_days` window (default: 14 days), bypassing redundant Soulseek server queries. If a user receives a strike or ban in the future, their entry is immediately evicted from the cache.
+
+### State Machine Rehydration
+
+On plugin initialization, DELEECH inspects `deleech.db` and rehydrates active, non-expired enforcement states into `self.probed_users`. When Nicotine+ restarts, users who were mid-warning or pending ban do not have their progression reset to zero, ensuring uninterrupted anti-leeching surveillance across client sessions.
+
+### Database Backups & Revert System
+
+DELEECH manages safety backups in the `deleech_backups/` subfolder inside the Nicotine+ data directory:
+
+1. **Startup Backups**:
+   - Every time Nicotine+ starts with DELEECH enabled, an atomic snapshot is taken: `deleech_backup_YYYY-MM-DD_HH-MM-SS.db`.
+   - DELEECH automatically prunes older startup backups, keeping at most **10** backups.
+2. **Reverting to Latest Backup**:
+   - **In Configuration**: Navigate to **Preferences → Plugins → DELEECH → Settings**. A dedicated **Database Backups** section displays the latest backup timestamp and provides a **Revert to Latest Backup** button.
+   - **In Monitor Tab**: A **Revert DB Backup** button is also available directly in the DELEECH Monitor toolbar.
+3. **Replaced Database Archival**:
+   - When a revert is initiated, the currently active database is archived before being overwritten: `deleech_replaced_YYYY-MM-DD_HH-MM-SS.db`.
+   - DELEECH automatically prunes older replacement archives, keeping at most **10** replaced database files.
 
 ---
 

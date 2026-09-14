@@ -5,8 +5,8 @@
 # Filename: __init__.py
 # Author: paradigm_city
 # Description: DELEECH plugin for nicotine+
-# Version: 0.7
-# Schema version: 3
+# Version: 0.8
+# Schema version: 4
 
 from pynicotine.pluginsystem import BasePlugin
 from pynicotine.config import config
@@ -56,9 +56,11 @@ class Plugin(BasePlugin):
             "ban_progression": "fibonacci",
             "sort_column": "strikes",
             "sort_order": "descending",
+            "filter_text": "",
+            "verified_cache_days": 14,
             "show_ui_tab": True,
             "debug_log": False,
-            "schema_version": 1,
+            "schema_version": 4,
             "banned_name_patterns": "^LeecherNameHere"
         }
 
@@ -117,6 +119,10 @@ class Plugin(BasePlugin):
                 "type": "dropdown",
                 "options": ["fibonacci", "exponential"]
             },
+            "verified_cache_days": {
+                "description": "Days to cache verified peers who meet share requirements (0 to disable):",
+                "type": "int", "minimum": 0, "maximum": 365, "stepsize": 1
+            },
             "show_ui_tab": {
                 "description": "Show DELEECH monitor tab in main window",
                 "type": "bool"
@@ -148,12 +154,25 @@ class Plugin(BasePlugin):
 
         config_folder_path, data_folder_path = config.get_user_folders()
 
-        # database
-        database_path = os.path.join(data_folder_path, "deleech.db")
-        self.conn = sqlite3.connect(database_path)
+        # database and backups
+        self.config_folder_path = config_folder_path
+        self.data_folder_path = data_folder_path
+        self.database_path = os.path.join(data_folder_path, "deleech.db")
+        self.backup_dir = os.path.join(data_folder_path, "deleech_backups")
+        self.plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        self.database_path = os.path.join(self.plugin_dir, "deleech.db")
+        self.backup_dir = os.path.join(self.plugin_dir, "backups")
+        # Graceful fallback to legacy data_folder_path if not found in plugin_dir
+        if not os.path.exists(self.database_path):
+            legacy_db = os.path.join(data_folder_path, "deleech.db")
+            if os.path.exists(legacy_db):
+                self.database_path = legacy_db
+        self._startup_backup_done = False
+        self.conn = sqlite3.connect(self.database_path)
         self.csr = self.conn.cursor()
 
     def __del__(self):
+        self._unhook_plugin_settings_dialog()
         self._teardown_ui()
         try:
             self.csr.close()
@@ -165,17 +184,156 @@ class Plugin(BasePlugin):
             pass
 
     def init(self):
+        self._hook_plugin_settings_dialog()
         if self.settings.get("show_ui_tab", True):
             self._init_ui()
 
     def disable(self):
+        self._unhook_plugin_settings_dialog()
         self._teardown_ui()
 
     def unloaded_notification(self):
+        self._unhook_plugin_settings_dialog()
         self._teardown_ui()
+
+    def _create_startup_backup(self):
+        """Creates a timestamped backup of deleech.db at startup, keeping at most 10."""
+        try:
+            if not os.path.exists(self.database_path) or os.path.getsize(self.database_path) == 0:
+                return
+
+            os.makedirs(self.backup_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            backup_filename = f"deleech_backup_{timestamp}.db"
+            backup_filepath = os.path.join(self.backup_dir, backup_filename)
+
+            bck_conn = sqlite3.connect(backup_filepath)
+            try:
+                self.conn.backup(bck_conn)
+            finally:
+                bck_conn.close()
+
+            self.log("Created startup backup of database: %s", backup_filename)
+            self._prune_backups(prefix="deleech_backup_", max_count=10)
+        except Exception as e:
+            self.log_debug("Failed to create database startup backup: %s", e)
+
+    def _prune_backups(self, prefix, max_count=10):
+        """Prunes backup files starting with prefix to ensure at most max_count files remain."""
+        try:
+            if not os.path.exists(self.backup_dir):
+                return
+            matched = []
+            for fname in os.listdir(self.backup_dir):
+                if fname.startswith(prefix) and fname.endswith(".db"):
+                    fpath = os.path.join(self.backup_dir, fname)
+                    matched.append((fname, os.path.getmtime(fpath), fpath))
+            matched.sort(key=lambda x: (x[0], x[1]))  # Oldest first
+            while len(matched) > max_count:
+                oldest_fname, _, oldest_path = matched.pop(0)
+                try:
+                    os.remove(oldest_path)
+                    self.log_debug("Pruned old backup file: %s", oldest_fname)
+                except Exception as e:
+                    self.log_debug("Failed to remove old backup %s: %s", (oldest_path, e))
+        except Exception as e:
+            self.log_debug("Error pruning backups with prefix %s: %s", (prefix, e))
+
+    def _get_latest_backup(self):
+        """Returns the absolute path to the latest startup backup file, or None."""
+        if not os.path.exists(self.backup_dir):
+            return None
+        backups = []
+        for fname in os.listdir(self.backup_dir):
+            if fname.startswith("deleech_backup_") and fname.endswith(".db"):
+                fpath = os.path.join(self.backup_dir, fname)
+                backups.append((fname, os.path.getmtime(fpath), fpath))
+        if not backups:
+            return None
+        backups.sort(key=lambda x: (x[0], x[1]), reverse=True)  # Newest first
+        return backups[0][2]
+
+    def revert_to_latest_backup(self):
+        """Reverts deleech.db to the latest startup backup file, archiving the current database as deleech_replaced_<timestamp>.db (max 10)."""
+        latest_backup = self._get_latest_backup()
+        if not latest_backup or not os.path.exists(latest_backup):
+            self.log("Cannot revert: no backup file found in %s.", self.backup_dir)
+            return False, "No backup files found."
+
+        try:
+            # 1. Archive current database with replacement timestamp
+            if os.path.exists(self.database_path) and os.path.getsize(self.database_path) > 0:
+                rep_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                rep_filename = f"deleech_replaced_{rep_timestamp}.db"
+                rep_filepath = os.path.join(self.backup_dir, rep_filename)
+
+                rep_conn = sqlite3.connect(rep_filepath)
+                try:
+                    self.conn.backup(rep_conn)
+                finally:
+                    rep_conn.close()
+
+                self.log("Archived replaced database to: %s", rep_filename)
+                self._prune_backups(prefix="deleech_replaced_", max_count=10)
+
+            # 2. Close active connection and cursor
+            try:
+                self.csr.close()
+            except Exception:
+                pass
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+
+            # 3. Clean up active WAL and SHM files to ensure restored DB is clean
+            for ext in ("-wal", "-shm"):
+                wal_file = self.database_path + ext
+                if os.path.exists(wal_file):
+                    try:
+                        os.remove(wal_file)
+                    except Exception:
+                        pass
+
+            # 4. Copy latest backup over the active database file
+            import shutil
+            shutil.copy2(latest_backup, self.database_path)
+
+            # 5. Re-open connection and cursor
+            self.conn = sqlite3.connect(self.database_path)
+            self.csr = self.conn.cursor()
+
+            # 6. Re-run dbinit, clear and rehydrate in-memory state
+            self.dbinit()
+            self.probed_users.clear()
+            self._rehydrate_state()
+            self.trigger_ui_refresh()
+
+            backup_name = os.path.basename(latest_backup)
+            self.log("Successfully reverted database to latest backup: %s", backup_name)
+            return True, f"Reverted to {backup_name}"
+        except Exception as e:
+            self.log("Failed to revert database to backup: %s", e)
+            try:
+                self.conn = sqlite3.connect(self.database_path)
+                self.csr = self.conn.cursor()
+            except Exception:
+                pass
+            return False, str(e)
 
     def dbinit(self):
         self.log_debug("init db...")
+        try:
+            self.csr.execute("PRAGMA journal_mode=WAL;")
+            self.csr.execute("PRAGMA synchronous=NORMAL;")
+        except Exception as e:
+            self.log_debug("Failed to set PRAGMA journal_mode/synchronous: %s", e)
+
+        # Create startup backup once per session before executing schema migrations
+        if not getattr(self, "_startup_backup_done", False):
+            self._create_startup_backup()
+            self._startup_backup_done = True
+
         sql = "CREATE TABLE IF NOT EXISTS strikes(" \
               "leecher TEXT NOT NULL UNIQUE, " \
               "strikes INTEGER, " \
@@ -190,8 +348,19 @@ class Plugin(BasePlugin):
         self.csr.execute(sql)
         self.conn.commit()
 
+        # Check in-database user_version
+        try:
+            self.csr.execute("PRAGMA user_version;")
+            db_version = self.csr.fetchone()[0]
+        except Exception:
+            db_version = 0
+
+        # Sync with settings schema_version if database version is 0 (first migration to user_version)
+        if db_version == 0 and self.settings.get("schema_version", 1) > 0:
+            db_version = self.settings.get("schema_version", 1)
+
         # maintain database schema
-        if self.settings["schema_version"] < 2:
+        if db_version < 2:
             self.log_debug("update schema to version 2")
             for sql in (
                 "alter table strikes add column mb_uploaded real default 0",
@@ -202,12 +371,67 @@ class Plugin(BasePlugin):
                     self.conn.commit()
                 except sqlite3.OperationalError:
                     pass  # column already exists, ignore
-            self.settings["schema_version"] = 2
+            db_version = 2
 
-        if self.settings["schema_version"] < 3:
+        if db_version < 3:
             self.log_debug("update schema to version 3")
             # no changes to schema
-            self.settings["schema_version"] = 3
+            db_version = 3
+
+        if db_version < 4:
+            self.log_debug("update schema to version 4")
+            self.csr.execute(
+                "CREATE TABLE IF NOT EXISTS verified_peers("
+                "user TEXT NOT NULL UNIQUE, "
+                "num_files INTEGER, "
+                "num_folders INTEGER, "
+                "shared_size_mb REAL, "
+                "verified_at DATETIME"
+                ")"
+            )
+            self.csr.execute("CREATE INDEX IF NOT EXISTS idx_strikes_leecher ON strikes(leecher);")
+            self.csr.execute("CREATE INDEX IF NOT EXISTS idx_verified_user ON verified_peers(user);")
+            self.conn.commit()
+            db_version = 4
+
+        try:
+            self.csr.execute(f"PRAGMA user_version = {db_version};")
+            self.conn.commit()
+        except Exception as e:
+            self.log_debug("Failed to set PRAGMA user_version: %s", e)
+
+        self.settings["schema_version"] = db_version
+
+        # Clean up stale entries older than 90 days from verified_peers
+        try:
+            self.csr.execute("DELETE FROM verified_peers WHERE date(verified_at) < date('now', '-90 days')")
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def _rehydrate_state(self):
+        """Rehydrates the in-memory surveillance state machine (self.probed_users) from SQLite on startup."""
+        try:
+            self.csr.execute(
+                "SELECT leecher, last_state, strikes, is_banned FROM strikes "
+                "WHERE (is_banned = 1 OR strikes > 0 OR last_state IS NOT NULL) "
+                "AND date(COALESCE(laststrikedate, strikedate, 'now')) >= date('now', '-90 days')"
+            )
+            rows = self.csr.fetchall()
+            rehydrated_count = 0
+            for leecher, last_state, strikes, is_banned in rows:
+                if is_banned:
+                    continue
+                if last_state:
+                    self.probed_users[leecher] = last_state
+                    rehydrated_count += 1
+                elif strikes and strikes > 0:
+                    self.probed_users[leecher] = "processed_leecher01"
+                    rehydrated_count += 1
+
+            self.log_debug("Rehydrated %d active leecher state(s) from database.", rehydrated_count)
+        except Exception as e:
+            self.log_debug("Failed to rehydrate state machine from database: %s", e)
 
     def log_debug(self, msg, msg_args=None):
         if self.settings["debug_log"]:
@@ -231,7 +455,9 @@ class Plugin(BasePlugin):
                      self.settings["auto_ban_after"])
 
         self.dbinit()
+        self._rehydrate_state()
         self._compile_banned_patterns()
+        self._hook_plugin_settings_dialog()
 
         if self.settings.get("show_ui_tab", True):
             self._init_ui()
@@ -415,6 +641,15 @@ class Plugin(BasePlugin):
             if is_user_accepted:
                 self.log_debug("%s: okay, sharing %s files in %s folders (%s).",
                                (user, num_files, num_folders, source))
+                try:
+                    self.csr.execute(
+                        "INSERT OR REPLACE INTO verified_peers(user, num_files, num_folders, shared_size_mb, verified_at) "
+                        "VALUES (?, ?, ?, ?, STRFTIME('%Y-%m-%d %H:%M:%f', 'now'))",
+                        [user, num_files, num_folders, shared_size / (1024 * 1024)]
+                    )
+                    self.conn.commit()
+                except Exception as e:
+                    self.log_debug("Failed to record verified peer %s: %s", (user, e))
             else:
                 self.log_debug("%s: buddy is sharing %s files in %s folders. Not complaining.",
                                (user, num_files, num_folders))
@@ -427,6 +662,11 @@ class Plugin(BasePlugin):
             if self.probed_users[user] == "check_before_ban":
                 self.log_debug("%s: arming a pending ban", user)
                 self.probed_users[user] = "pending_ban"
+                try:
+                    self.csr.execute("UPDATE strikes SET last_state=? WHERE leecher=?", ["pending_ban", user])
+                    self.conn.commit()
+                except Exception:
+                    pass
                 self.trigger_ui_refresh()
                 return
 
@@ -434,11 +674,14 @@ class Plugin(BasePlugin):
             # We already dealt with the user this session
             return
 
-        self.csr.execute("SELECT count(*) FROM strikes where leecher=?", [user])
-        rows = self.csr.fetchall()
-        if rows[0][0] > 0:
-            # We already messaged the user in a previous session
-            self.probed_users[user] = "processed_leecher01"
+        self.csr.execute("SELECT strikes, last_state FROM strikes WHERE leecher=?", [user])
+        row = self.csr.fetchone()
+        if row is not None:
+            # Returning leecher from a previous session or existing strike history
+            strikes, last_state = row
+            resumed_state = last_state if (last_state and last_state.startswith("processed_leecher")) else "processed_leecher01"
+            self.probed_users[user] = resumed_state
+            self.log_debug("%s: returning leecher, resuming state as %s", (user, resumed_state))
             self.trigger_ui_refresh()
             return
 
@@ -457,6 +700,11 @@ class Plugin(BasePlugin):
             notification_type = "log"
 
         self.probed_users[user] = "pending_leecher"
+        try:
+            self.csr.execute("UPDATE strikes SET last_state=? WHERE leecher=?", ["pending_leecher", user])
+            self.conn.commit()
+        except Exception:
+            pass
         self.log_debug(log_message, (user, num_files, num_folders, notification_type))
         self.trigger_ui_refresh()
 
@@ -472,6 +720,25 @@ class Plugin(BasePlugin):
 
         if user in self.probed_users:
             return
+
+        # Check if user was verified within the configured cache window
+        cache_days = self.settings.get("verified_cache_days", 14)
+        if cache_days > 0:
+            try:
+                self.csr.execute(
+                    "SELECT num_files, num_folders, shared_size_mb, verified_at FROM verified_peers "
+                    "WHERE user=? AND date(verified_at) >= date('now', ?)",
+                    [user, f"-{cache_days} days"]
+                )
+                cached = self.csr.fetchone()
+                if cached:
+                    num_f, num_d, sz_mb, v_date = cached
+                    self.log_debug("%s: recognized as verified peer (%d files, %d dirs, %1.1f MB, cached on %s)",
+                                   (user, num_f, num_d, sz_mb or 0.0, v_date))
+                    self.probed_users[user] = "okay"
+                    return
+            except Exception as e:
+                self.log_debug("Failed to check verified_peers cache for %s: %s", (user, e))
 
         # reset strikes if no recent events
         self.csr.execute("UPDATE strikes set strikes=0, strikedate=null, last_state=null where date(strikedate) < date('now', '-90 days') and leecher=?", [user])
@@ -550,6 +817,13 @@ class Plugin(BasePlugin):
                              [self.probed_users[user], user])
             self.conn.commit()
 
+        # Remove from verified_peers if struck or marked as leecher
+        try:
+            self.csr.execute("DELETE FROM verified_peers WHERE user=?", [user])
+            self.conn.commit()
+        except Exception:
+            pass
+
         # we need to get these numbers regardless of whether warning level was raised
         self.csr.execute("SELECT leecher, strikes, unban_count FROM strikes where leecher=?", [user])
         rows = self.csr.fetchall()
@@ -578,6 +852,11 @@ class Plugin(BasePlugin):
                         self.send_private(user, line, show_ui=self.settings["open_private_chat"], switch_page=False)
             else:
                 self.probed_users[user] = "check_before_ban"
+                try:
+                    self.csr.execute("UPDATE strikes SET last_state=? WHERE leecher=?", ["check_before_ban", user])
+                    self.conn.commit()
+                except Exception:
+                    pass
                 self.log_debug("%s: final request shares before ban", user)
                 self.core.userbrowse.request_user_shares(user)
 
@@ -648,11 +927,101 @@ class Plugin(BasePlugin):
                 self.probed_users[user] = "processed_leecher{:02d}".format(llevel)
             else:
                 self.probed_users[user] = "pending_leecher"
+            try:
+                self.csr.execute("UPDATE strikes SET last_state=? WHERE leecher=?", [self.probed_users[user], user])
+                self.conn.commit()
+            except Exception:
+                pass
 
         elif self.probed_users[user].startswith("pending_ban"):
             self.strike_leecher(user)
 
         self.trigger_ui_refresh()
+
+    # -------------------------------------------------------------------------
+    # Configuration Dialog Backup Hook
+    # -------------------------------------------------------------------------
+
+    def _hook_plugin_settings_dialog(self):
+        try:
+            from pynicotine.gtkgui.dialogs.pluginsettings import PluginSettings
+            if getattr(PluginSettings, "_deleech_backup_hooked", False):
+                return
+            orig_load_options = PluginSettings.load_options
+
+            def deleech_load_options(dlg, plugin_name, metasettings):
+                orig_load_options(dlg, plugin_name, metasettings)
+                try:
+                    p_name = getattr(self, "internal_name", "DELEECH")
+                    if plugin_name in ("DELEECH", p_name, "deleech"):
+                        self._inject_configuration_backup_ui(dlg)
+                except Exception as e:
+                    self.log_debug("Failed to inject backup UI in PluginSettings: %s", e)
+
+            PluginSettings.load_options = deleech_load_options
+            PluginSettings._deleech_backup_hooked = True
+            PluginSettings._deleech_orig_load_options = orig_load_options
+            self.log_debug("Hooked PluginSettings dialog for DELEECH backup controls.")
+        except Exception as e:
+            self.log_debug("Could not hook PluginSettings: %s", e)
+
+    def _unhook_plugin_settings_dialog(self):
+        try:
+            from pynicotine.gtkgui.dialogs.pluginsettings import PluginSettings
+            if getattr(PluginSettings, "_deleech_backup_hooked", False):
+                PluginSettings.load_options = getattr(PluginSettings, "_deleech_orig_load_options", PluginSettings.load_options)
+                PluginSettings._deleech_backup_hooked = False
+                self.log_debug("Unhooked PluginSettings dialog.")
+        except Exception:
+            pass
+
+    def _inject_configuration_backup_ui(self, dialog):
+        try:
+            from gi.repository import Gtk
+            latest = self._get_latest_backup()
+            latest_text = f"Latest startup backup: {os.path.basename(latest)}" if latest else "No database backups available."
+
+            group_box = dialog._generate_group_container("Database Backups")
+
+            backup_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, visible=True)
+            backup_row.set_hexpand(True)
+
+            info_label = Gtk.Label(label=latest_text, xalign=0, hexpand=True, wrap=True, visible=True)
+            self._pack_widget(backup_row, info_label, expand=True, fill=True)
+
+            btn_revert = Gtk.Button(label="Revert to Latest Backup", visible=True)
+            btn_revert.set_sensitive(bool(latest))
+
+            def do_revert():
+                success, msg = self.revert_to_latest_backup()
+                if success:
+                    new_latest = self._get_latest_backup()
+                    active_info = os.path.basename(new_latest) if new_latest else "None"
+                    info_label.set_text(f"Database successfully reverted!\nActive backup restored: {active_info}")
+                    btn_revert.set_sensitive(bool(new_latest))
+                else:
+                    info_label.set_text(f"Revert failed: {msg}")
+
+            def on_revert_btn_clicked(_b):
+                try:
+                    from pynicotine.gtkgui.widgets.dialogs import MessageDialog
+                    dlg = MessageDialog(
+                        parent=dialog,
+                        title="Revert Database",
+                        message=f"Are you sure you want to revert to the latest database backup?\n({os.path.basename(latest)})\n\nThe current database will be archived before replacement.",
+                        buttons=[("cancel", "Cancel"), ("revert", "Revert")],
+                        destructive_response_id="revert",
+                        callback=lambda d, resp, data: do_revert() if resp == "revert" else None
+                    )
+                    dlg.show()
+                except Exception:
+                    do_revert()
+
+            btn_revert.connect("clicked", on_revert_btn_clicked)
+            self._pack_widget(backup_row, btn_revert)
+            self._pack_widget(group_box, backup_row)
+        except Exception as e:
+            self.log_debug("Failed to inject backup UI into PluginSettings: %s", e)
 
     # -------------------------------------------------------------------------
     # UI Transparency (GTK Monitor Tab & TreeView)
@@ -770,6 +1139,10 @@ class Plugin(BasePlugin):
         self.filter_entry = Gtk.Entry()
         self.filter_entry.set_placeholder_text("Filter leechers...")
         self.filter_entry.set_width_chars(25)
+        saved_filter = self.settings.get("filter_text", "")
+        if saved_filter:
+            self._filter_text = saved_filter
+            self.filter_entry.set_text(saved_filter)
         self.filter_entry.connect("changed", self._on_filter_changed)
         self._pack_widget(toolbar_start_content, self.filter_entry)
 
@@ -793,6 +1166,10 @@ class Plugin(BasePlugin):
         btn_reset = Gtk.Button(label="Reset Strikes")
         btn_reset.connect("clicked", self._on_reset_clicked)
         self._pack_widget(toolbar_end_content, btn_reset)
+
+        btn_revert = Gtk.Button(label="Revert DB Backup")
+        btn_revert.connect("clicked", self._on_revert_backup_clicked)
+        self._pack_widget(toolbar_end_content, btn_revert)
 
         # Toolbar is the first child of page_container
         self._pack_widget(page_container, toolbar)
@@ -1213,6 +1590,7 @@ class Plugin(BasePlugin):
 
     def _on_filter_changed(self, entry):
         self._filter_text = entry.get_text().strip()
+        self.settings["filter_text"] = self._filter_text
         self.refresh_ui()
 
     def _on_refresh_clicked(self, button):
@@ -1248,6 +1626,31 @@ class Plugin(BasePlugin):
                     self.probed_users[user] = "okay"
                 self.log("%s: strikes reset via UI", user)
         self.refresh_ui()
+
+    def _on_revert_backup_clicked(self, button):
+        latest = self._get_latest_backup()
+        if not latest:
+            self.log("No database backup files found in %s.", self.backup_dir)
+            return
+
+        latest_name = os.path.basename(latest)
+        try:
+            from pynicotine.gtkgui.widgets.dialogs import MessageDialog
+            def on_response(_dialog, response_id, _data):
+                if response_id == "revert":
+                    self.revert_to_latest_backup()
+
+            dlg = MessageDialog(
+                parent=self.window,
+                title="Revert Database",
+                message=f"Are you sure you want to revert to the latest database backup?\n({latest_name})\n\nThe current database will be archived before replacement.",
+                buttons=[("cancel", "Cancel"), ("revert", "Revert")],
+                destructive_response_id="revert",
+                callback=on_response
+            )
+            dlg.show()
+        except Exception:
+            self.revert_to_latest_backup()
 
     def _on_browse_clicked(self, button):
         if not self.treeview:

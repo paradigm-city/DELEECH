@@ -12,10 +12,10 @@ The **DELEECH Monitor** is an integrated graphical user interface tab embedded d
 By providing transparent inspection and real-time feedback, the monitor eliminates the "black box" behavior of automated anti-leeching.
 
 ```
-+----------------------------------------------------------------------------------------------------+
-|  [Filter: text...   ]                   [Refresh] [Browse Shares] [Unban Selected] [Reset Strikes]  |
-|  Tracked Leechers: 42 | Currently Banned: 3 | Cumulative Upload: 1,248.5 MB                        |
-+----------------------------------------------------------------------------------------------------+
++-------------------------------------------------------------------------------------------------------------------+
+|  [Filter: text...   ]       [Refresh] [Browse Shares] [Unban Selected] [Reset Strikes] [Revert DB Backup]         |
+|  Tracked Leechers: 42 | Currently Banned: 3 | Cumulative Upload: 1,248.5 MB                                      |
++-------------------------------------------------------------------------------------------------------------------+
 | Leecher    | Status            | Strikes | Total | Uploaded / Quota | Ban Expiry         | Unbans  |
 +------------+-------------------+---------+-------+------------------+--------------------+---------+
 | BadUser01  | BANNED            |    3    |   5   | 204.2 / 200 MB   | 2026-09-18 14:22   |    1    |
@@ -95,7 +95,7 @@ sequenceDiagram
     participant Win as GTK MainWindow
 
     Core->>Plugin: init() / loaded_notification()
-    Plugin->>Plugin: dbinit(), _compile_banned_patterns()
+    Plugin->>Plugin: dbinit(), _rehydrate_state(), _compile_banned_patterns()
     Note over Plugin,GLib: Asynchronous UI Attachment
     Plugin->>GLib: GLib.idle_add(self._setup_ui)
     
