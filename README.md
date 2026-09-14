@@ -233,12 +233,16 @@ When a verified peer queues an upload, DELEECH recognizes them immediately withi
 
 On plugin initialization, DELEECH inspects `deleech.db` and rehydrates active, non-expired enforcement states into `self.probed_users`. When Nicotine+ restarts, users who were mid-warning or pending ban do not have their progression reset to zero, ensuring uninterrupted anti-leeching surveillance across client sessions.
 
+### Database Storage & Automatic Migration
+
+DELEECH stores its SQLite database (`deleech.db`) directly in the plugin directory (`plugins/DELEECH/`) and safety backups in the `backups/` subdirectory.
+
+- **Automatic Legacy Migration**: On startup, DELEECH checks if an older database file exists in the legacy Nicotine+ data directory (`<nicotine_data>/deleech.db`). If present, it automatically moves the database and any associated SQLite WAL (`-wal`) and SHM (`-shm`) files to `plugins/DELEECH/deleech.db`. Any historical backups in `<nicotine_data>/deleech_backups/` are also moved into `plugins/DELEECH/backups/`.
+
 ### Database Backups & Revert System
 
-DELEECH manages safety backups in the `deleech_backups/` subfolder inside the Nicotine+ data directory:
-
 1. **Startup Backups**:
-   - Every time Nicotine+ starts with DELEECH enabled, an atomic snapshot is taken: `deleech_backup_YYYY-MM-DD_HH-MM-SS.db`.
+   - Every time Nicotine+ starts with DELEECH enabled, an atomic snapshot is taken: `deleech_backup_YYYY-MM-DD_HH-MM-SS.db` in `plugins/DELEECH/backups/`.
    - DELEECH automatically prunes older startup backups, keeping at most **10** backups.
 2. **Reverting to Latest Backup**:
    - **In Configuration**: Navigate to **Preferences → Plugins → DELEECH → Settings**. A dedicated **Database Backups** section displays the latest backup timestamp and provides a **Revert to Latest Backup** button.

@@ -13,6 +13,7 @@ from pynicotine.config import config
 from datetime import datetime, timedelta
 import sqlite3
 import os
+import shutil
 import re
 
 class Plugin(BasePlugin):
@@ -157,16 +158,13 @@ class Plugin(BasePlugin):
         # database and backups
         self.config_folder_path = config_folder_path
         self.data_folder_path = data_folder_path
-        self.database_path = os.path.join(data_folder_path, "deleech.db")
-        self.backup_dir = os.path.join(data_folder_path, "deleech_backups")
         self.plugin_dir = os.path.dirname(os.path.abspath(__file__))
         self.database_path = os.path.join(self.plugin_dir, "deleech.db")
         self.backup_dir = os.path.join(self.plugin_dir, "backups")
-        # Graceful fallback to legacy data_folder_path if not found in plugin_dir
-        if not os.path.exists(self.database_path):
-            legacy_db = os.path.join(data_folder_path, "deleech.db")
-            if os.path.exists(legacy_db):
-                self.database_path = legacy_db
+
+        # Migrate database from legacy location if present on startup
+        self._migrate_legacy_database_location()
+
         self._startup_backup_done = False
         self.conn = sqlite3.connect(self.database_path)
         self.csr = self.conn.cursor()
@@ -195,6 +193,82 @@ class Plugin(BasePlugin):
     def unloaded_notification(self):
         self._unhook_plugin_settings_dialog()
         self._teardown_ui()
+
+    def _migrate_legacy_database_location(self):
+        """Checks if a database file exists in the legacy data folder and moves it to plugin_dir."""
+        try:
+            legacy_db = os.path.join(self.data_folder_path, "deleech.db")
+            if (
+                os.path.abspath(legacy_db) != os.path.abspath(self.database_path)
+                and os.path.exists(legacy_db)
+            ):
+                target_exists = os.path.exists(self.database_path)
+                target_size = os.path.getsize(self.database_path) if target_exists else 0
+
+                if not target_exists or target_size == 0:
+                    # Move legacy database to the new plugin directory location
+                    try:
+                        shutil.move(legacy_db, self.database_path)
+                        self.log("Migrated database file from %s to %s", legacy_db, self.database_path)
+                        for ext in ("-wal", "-shm"):
+                            legacy_wal = legacy_db + ext
+                            if os.path.exists(legacy_wal):
+                                try:
+                                    shutil.move(legacy_wal, self.database_path + ext)
+                                except Exception as e:
+                                    self.log_debug("Failed to move legacy WAL file %s: %s", legacy_wal, e)
+                    except Exception as e:
+                        self.log_debug("Failed to move legacy database file to %s: %s", self.database_path, e)
+                else:
+                    # Target database already exists and is non-empty. Archive legacy database into backups/
+                    os.makedirs(self.backup_dir, exist_ok=True)
+                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                    archived_legacy = os.path.join(self.backup_dir, f"deleech_legacy_{timestamp}.db")
+                    try:
+                        shutil.move(legacy_db, archived_legacy)
+                        self.log(
+                            "Legacy database found at %s. Archived to %s (active database already present at %s).",
+                            legacy_db, archived_legacy, self.database_path
+                        )
+                        for ext in ("-wal", "-shm"):
+                            legacy_wal = legacy_db + ext
+                            if os.path.exists(legacy_wal):
+                                try:
+                                    os.remove(legacy_wal)
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        self.log_debug("Failed to archive legacy database file %s: %s", legacy_db, e)
+
+            # Check for legacy backup directory: data_folder_path/deleech_backups
+            legacy_backup_dir = os.path.join(self.data_folder_path, "deleech_backups")
+            if (
+                os.path.abspath(legacy_backup_dir) != os.path.abspath(self.backup_dir)
+                and os.path.exists(legacy_backup_dir)
+                and os.path.isdir(legacy_backup_dir)
+            ):
+                os.makedirs(self.backup_dir, exist_ok=True)
+                for fname in os.listdir(legacy_backup_dir):
+                    src_file = os.path.join(legacy_backup_dir, fname)
+                    dst_file = os.path.join(self.backup_dir, fname)
+                    if not os.path.exists(dst_file):
+                        try:
+                            shutil.move(src_file, dst_file)
+                        except Exception as e:
+                            self.log_debug("Failed to move legacy backup %s: %s", src_file, e)
+                    else:
+                        try:
+                            os.remove(src_file)
+                        except Exception:
+                            pass
+                try:
+                    if not os.listdir(legacy_backup_dir):
+                        os.rmdir(legacy_backup_dir)
+                        self.log("Removed empty legacy backup directory: %s", legacy_backup_dir)
+                except Exception as e:
+                    self.log_debug("Failed to remove legacy backup directory %s: %s", legacy_backup_dir, e)
+        except Exception as e:
+            self.log_debug("Error during legacy database migration check: %s", e)
 
     def _create_startup_backup(self):
         """Creates a timestamped backup of deleech.db at startup, keeping at most 10."""
