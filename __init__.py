@@ -144,28 +144,25 @@ class Plugin(BasePlugin):
         self.stats_label = None
         self.filter_entry = None
         self._filter_text = ""
+        self.window = None
 
         config_folder_path, data_folder_path = config.get_user_folders()
 
         # database
         database_path = os.path.join(data_folder_path, "deleech.db")
-        self.log("database: %s", database_path)
         self.conn = sqlite3.connect(database_path)
         self.csr = self.conn.cursor()
 
     def __del__(self):
         self._teardown_ui()
         try:
-            self.log("cursor closing...")
             self.csr.close()
         except Exception:
             pass
         try:
-            self.log("connection closing...")
             self.conn.close()
         except Exception:
             pass
-        self.log("cleanup done")
 
     def init(self):
         if self.settings.get("show_ui_tab", True):
@@ -178,7 +175,6 @@ class Plugin(BasePlugin):
         self._teardown_ui()
 
     def dbinit(self):
-        self.log_debug("init db...")
         sql = "CREATE TABLE IF NOT EXISTS strikes(" \
               "leecher TEXT NOT NULL UNIQUE, " \
               "strikes INTEGER, " \
@@ -195,7 +191,6 @@ class Plugin(BasePlugin):
 
         # maintain database schema
         if self.settings["schema_version"] < 2:
-            self.log_debug("update schema to version 2")
             for sql in (
                 "alter table strikes add column mb_uploaded real default 0",
                 "alter table strikes add column last_state TEXT"
@@ -208,7 +203,6 @@ class Plugin(BasePlugin):
             self.settings["schema_version"] = 2
 
         if self.settings["schema_version"] < 3:
-            self.log_debug("update schema to version 3")
             # no changes to schema
             self.settings["schema_version"] = 3
 
@@ -498,7 +492,6 @@ class Plugin(BasePlugin):
             self.csr.execute("SELECT leecher, strikes, strikedate, ban_end_date FROM strikes where strikedate is not null and leecher=?", [user])
             rows = self.csr.fetchall()
             for leecher, strikes, strikedate, ban_end_date in rows:
-                self.log_debug("ban end date recorded: %s", [ban_end_date])
                 if ban_end_date is None:
                     end_of_ban = datetime.strptime(strikedate, '%Y-%m-%d %H:%M:%S.%f') + timedelta(days=1)
                 else:
@@ -644,7 +637,6 @@ class Plugin(BasePlugin):
             self.log_debug("%s: msgd leecher", user)
 
         elif self.probed_users[user].startswith("processed_leecher"):
-            self.log_debug("%s: %s", (user, self.probed_users[user]))
             llevel = int(self.probed_users[user][-2:])
             if llevel < self.settings["msg_repeat_after"] - 1:
                 llevel += 1
@@ -675,27 +667,34 @@ class Plugin(BasePlugin):
             from gi.repository import GLib, Gio
             import pynicotine.gtkgui.application as app_module
 
-            window = None
-            app = getattr(app_module, "_instance", None)
-            if not app and hasattr(app_module, "Application"):
-                app = getattr(app_module.Application, "_instance", None)
-            if not app:
-                try:
-                    app = Gio.Application.get_default()
-                except Exception:
-                    pass
+            window = self.window
+            if not window or not getattr(window, "notebook", None):
+                window = None
+                app = getattr(app_module, "_instance", None)
+                if not app and hasattr(app_module, "Application"):
+                    app = getattr(app_module.Application, "_instance", None)
+                if not app:
+                    try:
+                        app = Gio.Application.get_default()
+                    except Exception:
+                        pass
 
-            if app:
-                w = getattr(app, "window", None)
-                if w and getattr(w, "notebook", None):
-                    window = w
+                if app:
+                    w = getattr(app, "window", None)
+                    if w and getattr(w, "notebook", None):
+                        window = w
+                    elif hasattr(app, "get_windows"):
+                        for win in app.get_windows():
+                            if getattr(win, "notebook", None):
+                                window = win
+                                break
 
-            if not window:
-                import gc
-                for mw in gc.get_objects():
-                    if type(mw).__name__ == "MainWindow" and getattr(mw, "notebook", None):
-                        window = mw
-                        break
+                if not window:
+                    import gc
+                    for mw in gc.get_objects():
+                        if type(mw).__name__ == "MainWindow" and getattr(mw, "notebook", None):
+                            window = mw
+                            break
 
             if not window or not getattr(window, "notebook", None):
                 GLib.timeout_add(500, self._setup_ui)
@@ -704,15 +703,14 @@ class Plugin(BasePlugin):
             if self.ui_page is not None:
                 return False
 
+            self.window = window
             self._create_ui_widgets(window)
             self.refresh_ui()
-            self.log_debug("DELEECH UI attached to main window.")
         except Exception as e:
             self.ui_page = None
             self.treeview = None
-            import traceback
-            err = traceback.format_exc()
-            self.log("Failed to initialize DELEECH UI tab: %s", err)
+            self.window = None
+            self.log("Failed to initialize DELEECH UI tab: %s", e)
         return False
 
     @staticmethod
@@ -961,10 +959,22 @@ class Plugin(BasePlugin):
     def _teardown_ui(self):
         try:
             if self.ui_page is not None:
-                window = None
-                from pynicotine.gtkgui.application import Application
-                if Application and hasattr(Application, "_instance") and Application._instance:
-                    window = getattr(Application._instance, "window", None)
+                window = self.window
+                if not window:
+                    from pynicotine.gtkgui.application import Application
+                    if Application and hasattr(Application, "_instance") and Application._instance:
+                        window = getattr(Application._instance, "window", None)
+                if not window:
+                    try:
+                        from gi.repository import Gio
+                        app = Gio.Application.get_default()
+                        if app and hasattr(app, "get_windows"):
+                            for win in app.get_windows():
+                                if getattr(win, "notebook", None):
+                                    window = win
+                                    break
+                    except Exception:
+                        pass
                 if not window:
                     import gc
                     for mw in gc.get_objects():
@@ -1017,6 +1027,7 @@ class Plugin(BasePlugin):
                 self.treeview = None
                 self.stats_label = None
                 self.filter_entry = None
+                self.window = None
                 self.log_debug("DELEECH UI tab removed.")
         except Exception as e:
             self.log_debug("Failed to teardown DELEECH UI: %s", e)
