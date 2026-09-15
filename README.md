@@ -241,7 +241,10 @@ DELEECH stores its SQLite database (`deleech.db`) directly in the plugin directo
 
 ### Database Backups & Revert System
 
+DELEECH manages safety backups in the `deleech_backups/` subfolder inside the Nicotine+ data directory:
+
 1. **Startup Backups**:
+   - Every time Nicotine+ starts with DELEECH enabled, an atomic snapshot is taken: `deleech_backup_YYYY-MM-DD_HH-MM-SS.db`.
    - Every time Nicotine+ starts with DELEECH enabled, an atomic snapshot is taken: `deleech_backup_YYYY-MM-DD_HH-MM-SS.db` in `plugins/DELEECH/backups/`.
    - DELEECH automatically prunes older startup backups, keeping at most **10** backups.
 2. **Reverting to Latest Backup**:

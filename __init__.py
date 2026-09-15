@@ -158,9 +158,16 @@ class Plugin(BasePlugin):
         # database and backups
         self.config_folder_path = config_folder_path
         self.data_folder_path = data_folder_path
+        self.database_path = os.path.join(data_folder_path, "deleech.db")
+        self.backup_dir = os.path.join(data_folder_path, "deleech_backups")
         self.plugin_dir = os.path.dirname(os.path.abspath(__file__))
         self.database_path = os.path.join(self.plugin_dir, "deleech.db")
         self.backup_dir = os.path.join(self.plugin_dir, "backups")
+        # Graceful fallback to legacy data_folder_path if not found in plugin_dir
+        if not os.path.exists(self.database_path):
+            legacy_db = os.path.join(data_folder_path, "deleech.db")
+            if os.path.exists(legacy_db):
+                self.database_path = legacy_db
 
         # Migrate database from legacy location if present on startup
         self._migrate_legacy_database_location()
@@ -545,7 +552,7 @@ class Plugin(BasePlugin):
                 continue
             try:
                 self._banned_patterns.append(re.compile(line, re.IGNORECASE))
-                self.log_debug("Loaded ban pattern: %s", line)
+                # self.log_debug("Loaded ban pattern: %s", line)
             except re.error as e:
                 self.log("Invalid regex pattern '%s': %s", (line, e))
         self.log("Loaded %d banned name pattern(s).", len(self._banned_patterns))
@@ -788,7 +795,7 @@ class Plugin(BasePlugin):
         matched_pattern = self._is_name_banned(user)
         if matched_pattern:
             if not self.core.network_filter.is_user_banned(user):
-                self.log("%s: name matches banned pattern '%s', banning immediately.", (user, matched_pattern))
+                self.log_debug("%s: name matches banned pattern '%s', banning immediately.", (user, matched_pattern))
                 self.core.network_filter.ban_user(user)
             return
 
