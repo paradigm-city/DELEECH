@@ -915,7 +915,7 @@ class Plugin(BasePlugin):
         if self.probed_users[user].startswith("processed_leecher"):
             self.log_debug("%s: warning level set to %s", (user, num_strikes))
 
-        if num_strikes >= self.settings["auto_ban_after"] or self.probed_users[user] == "leecher_exceeded_quota":
+        if num_strikes > self.settings["auto_ban_after"] or self.probed_users[user] == "leecher_exceeded_quota":
             if self.probed_users[user] == "pending_ban" or self.probed_users[user] == "leecher_exceeded_quota":
                 self.log("%s: banning leecher after %s warnings", (user, num_strikes))
                 ban_days = self.bans_2_days(unban_count + 1)
