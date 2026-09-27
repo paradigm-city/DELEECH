@@ -56,6 +56,9 @@ class Plugin(BasePlugin):
             "ban_progression": "fibonacci",
             "sort_column": "strikes",
             "sort_order": "descending",
+            "filter_text": "",
+            "verified_cache_days": 14,
+            "ui_refresh_interval": 30,
             "show_ui_tab": True,
             "debug_log": False,
             "schema_version": 1,
@@ -117,6 +120,14 @@ class Plugin(BasePlugin):
                 "type": "dropdown",
                 "options": ["fibonacci", "exponential"]
             },
+            "verified_cache_days": {
+                "description": "Days to cache verified peers who meet share requirements (0 to disable):",
+                "type": "int", "minimum": 0, "maximum": 365, "stepsize": 1
+            },
+            "ui_refresh_interval": {
+                "description": "Monitor tab auto-refresh interval (seconds):",
+                "type": "int", "minimum": 5, "maximum": 3600, "stepsize": 5
+            },
             "show_ui_tab": {
                 "description": "Show DELEECH monitor tab in main window",
                 "type": "bool"
@@ -144,6 +155,8 @@ class Plugin(BasePlugin):
         self.stats_label = None
         self.filter_entry = None
         self._filter_text = ""
+        self.window = None
+        self._refresh_timeout_id = None
 
         config_folder_path, data_folder_path = config.get_user_folders()
 
@@ -154,6 +167,8 @@ class Plugin(BasePlugin):
         self.csr = self.conn.cursor()
 
     def __del__(self):
+        self._stop_periodic_refresh()
+        self._unhook_plugin_settings_dialog()
         self._teardown_ui()
         try:
             self.log("cursor closing...")
@@ -172,9 +187,13 @@ class Plugin(BasePlugin):
             self._init_ui()
 
     def disable(self):
+        self._stop_periodic_refresh()
+        self._unhook_plugin_settings_dialog()
         self._teardown_ui()
 
     def unloaded_notification(self):
+        self._stop_periodic_refresh()
+        self._unhook_plugin_settings_dialog()
         self._teardown_ui()
 
     def dbinit(self):
@@ -238,6 +257,8 @@ class Plugin(BasePlugin):
 
         if self.settings.get("show_ui_tab", True):
             self._init_ui()
+
+        self._start_periodic_refresh()
 
     def _compile_banned_patterns(self):
         self._banned_patterns = []
@@ -1036,6 +1057,38 @@ class Plugin(BasePlugin):
         except Exception as e:
             self.log_debug("Failed to record sort column change: %s", e)
 
+
+    def _start_periodic_refresh(self):
+        self._stop_periodic_refresh()
+        interval = self.settings.get("ui_refresh_interval", 30)
+        if interval > 0:
+            try:
+                from gi.repository import GLib
+                self._refresh_timeout_id = GLib.timeout_add_seconds(interval, self._on_periodic_refresh)
+            except Exception:
+                pass
+
+    def _stop_periodic_refresh(self):
+        if getattr(self, "_refresh_timeout_id", None):
+            try:
+                from gi.repository import GLib
+                GLib.source_remove(self._refresh_timeout_id)
+            except Exception:
+                pass
+            self._refresh_timeout_id = None
+
+    def _on_periodic_refresh(self):
+        self.trigger_ui_refresh()
+        interval = self.settings.get("ui_refresh_interval", 30)
+        if interval > 0:
+            try:
+                from gi.repository import GLib
+                self._refresh_timeout_id = GLib.timeout_add_seconds(interval, self._on_periodic_refresh)
+            except Exception:
+                pass
+        else:
+            self._refresh_timeout_id = None
+        return False  # Do not automatically repeat; we reschedule manually to catch setting changes
 
     def trigger_ui_refresh(self):
         try:

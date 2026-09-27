@@ -210,7 +210,63 @@ The plugin creates a single table:
 - `mb_uploaded` — total MB uploaded to this user during leecher tracking
 - `last_state` — last internal workflow state
 
-The plugin also resets stale strikes if the last strike is older than **90 days**.
+The plugin resets stale strikes if the last strike is older than **90 days**.
+
+### Table: `verified_peers`
+
+Caches peers whose shared files and folders satisfy all requirements:
+
+- `user` — username, unique
+- `num_files` — verified file count
+- `num_folders` — verified public folder count
+- `shared_size_mb` — verified shared volume in MB
+- `verified_at` — timestamp of verification
+
+When a verified peer queues an upload, DELEECH recognizes them immediately within the `verified_cache_days` window (default: 14 days), bypassing redundant Soulseek server queries. If a user receives a strike or ban in the future, their entry is immediately evicted from the cache.
+
+### State Machine Rehydration
+
+On plugin initialization, DELEECH inspects `deleech.db` and rehydrates active, non-expired enforcement states into `self.probed_users`. When Nicotine+ restarts, users who were mid-warning or pending ban do not have their progression reset to zero, ensuring uninterrupted anti-leeching surveillance across client sessions.
+
+### Database Storage & Automatic Migration
+
+DELEECH stores its SQLite database (`deleech.db`) directly in the plugin directory (`plugins/DELEECH/`) and safety backups in the `backups/` subdirectory.
+
+- **Automatic Legacy Migration**: On startup, DELEECH checks if an older database file exists in the legacy Nicotine+ data directory (`<nicotine_data>/deleech.db`). If present, it automatically moves the database and any associated SQLite WAL (`-wal`) and SHM (`-shm`) files to `plugins/DELEECH/deleech.db`. Any historical backups in `<nicotine_data>/deleech_backups/` are also moved into `plugins/DELEECH/backups/`.
+
+### Database Backups & Revert System
+
+DELEECH manages safety backups in the `deleech_backups/` subfolder inside the Nicotine+ data directory:
+
+1. **Startup Backups**:
+   - Every time Nicotine+ starts with DELEECH enabled, an atomic snapshot is taken: `deleech_backup_YYYY-MM-DD_HH-MM-SS.db` in `plugins/DELEECH/backups/`.
+   - DELEECH automatically prunes older startup backups, keeping at most **10** backups.
+2. **Reverting to Latest Backup**:
+   - **In Configuration**: Navigate to **Preferences → Plugins → DELEECH → Settings**. A dedicated **Database Backups** section displays the latest backup timestamp and provides a **Revert to Latest Backup** button.
+   - **In Monitor Tab**: A **Revert DB Backup** button is also available directly in the DELEECH Monitor toolbar.
+3. **Replaced Database Archival**:
+   - When a revert is initiated, the currently active database is archived before being overwritten: `deleech_replaced_YYYY-MM-DD_HH-MM-SS.db`.
+   - DELEECH automatically prunes older replacement archives, keeping at most **10** replaced database files.
+
+---
+
+## Monitor Window & GUI Integration
+
+DELEECH includes an integrated GTK4 / Adwaita monitor tab docked directly into the main Nicotine+ window notebook.
+
+### Features
+- **Live Surveillance**: Shows real-time leecher states (`Warned`, `Pending Ban`, `Auditing Shares`, `BANNED`, `Quota Exceeded`).
+- **Metrics Summary**: Live counter for tracked peers, active bans, and cumulative bandwidth consumed by leechers.
+- **Auto-Refreshing UI**: The tracking list and metrics automatically refresh at configurable intervals (default: 30 seconds) via a background GLib timer, ensuring you always see up-to-date ban timers and status without manual interaction.
+- **Accurate Numeric Sorting**: Backed by typed GObject columns (`UINT`, `UINT64`) so strikes, upload sizes, and unban counts sort accurately instead of alphabetically.
+- **Persistent Preferences**: Column layouts, widths, and sort order are saved across restarts.
+- **Interactive Controls**:
+  - Live search filter by username or status.
+  - Multi-select manual unban (`Unban Selected`).
+  - Multi-select strike forgiveness (`Reset Strikes`).
+  - Direct share browser access (`Browse Shares` or double-clicking any row).
+
+For complete technical documentation, widget hierarchy, sequence diagrams, and lifecycle specifications, see [MONITOR.md](MONITOR.md).
 
 ---
 
