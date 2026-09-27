@@ -2,8 +2,10 @@ __pycache__/
 *.pyc
 __pycache__/*
 ui_debug.log
-deleech - Kopie.db
-deleech.db
-deleech.db-shm
-deleech.db-wal
-backups/*
+
+# SQLite databases and backups
+*.db
+*.db-wal
+*.db-shm
+backups/
+deleech_backups/
