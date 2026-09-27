@@ -1069,7 +1069,7 @@ class Plugin(BasePlugin):
                     total_banned += 1
 
                 if is_banned:
-                    status_str = "BANNED"
+                    status_str = "Banned"
                 elif user in self.probed_users:
                     st = self.probed_users[user]
                     if st == "pending_ban":
