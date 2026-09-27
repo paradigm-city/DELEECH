@@ -244,7 +244,6 @@ DELEECH stores its SQLite database (`deleech.db`) directly in the plugin directo
 DELEECH manages safety backups in the `deleech_backups/` subfolder inside the Nicotine+ data directory:
 
 1. **Startup Backups**:
-   - Every time Nicotine+ starts with DELEECH enabled, an atomic snapshot is taken: `deleech_backup_YYYY-MM-DD_HH-MM-SS.db`.
    - Every time Nicotine+ starts with DELEECH enabled, an atomic snapshot is taken: `deleech_backup_YYYY-MM-DD_HH-MM-SS.db` in `plugins/DELEECH/backups/`.
    - DELEECH automatically prunes older startup backups, keeping at most **10** backups.
 2. **Reverting to Latest Backup**:
@@ -263,6 +262,7 @@ DELEECH includes an integrated GTK4 / Adwaita monitor tab docked directly into t
 ### Features
 - **Live Surveillance**: Shows real-time leecher states (`Warned`, `Pending Ban`, `Auditing Shares`, `BANNED`, `Quota Exceeded`).
 - **Metrics Summary**: Live counter for tracked peers, active bans, and cumulative bandwidth consumed by leechers.
+- **Auto-Refreshing UI**: The tracking list and metrics automatically refresh at configurable intervals (default: 30 seconds) via a background GLib timer, ensuring you always see up-to-date ban timers and status without manual interaction.
 - **Accurate Numeric Sorting**: Backed by typed GObject columns (`UINT`, `UINT64`) so strikes, upload sizes, and unban counts sort accurately instead of alphabetically.
 - **Persistent Preferences**: Column layouts, widths, and sort order are saved across restarts.
 - **Interactive Controls**:
