@@ -445,9 +445,15 @@ class Plugin(BasePlugin):
         except Exception:
             db_version = 0
 
-        # Sync with settings schema_version if database version is 0 (first migration to user_version)
-        if db_version == 0 and self.settings.get("schema_version", 1) > 0:
-            db_version = self.settings.get("schema_version", 1)
+        # Never trust the stored version alone: databases created by earlier releases may have been
+        # stamped with a version whose migrations never ran. All migrations below are idempotent.
+        self.csr.execute("PRAGMA table_info(strikes);")
+        strikes_columns = {row[1] for row in self.csr.fetchall()}
+        if not {"mb_uploaded", "last_state"} <= strikes_columns:
+            db_version = min(db_version, 1)
+        self.csr.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='verified_peers'")
+        if self.csr.fetchone() is None:
+            db_version = min(db_version, 3)
 
         # maintain database schema
         if db_version < 2:
