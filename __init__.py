@@ -225,16 +225,16 @@ class Plugin(BasePlugin):
                     # Move legacy database to the new plugin directory location
                     try:
                         shutil.move(legacy_db, self.database_path)
-                        self.log("Migrated database file from %s to %s", legacy_db, self.database_path)
+                        self.log("Migrated database file from %s to %s", (legacy_db, self.database_path))
                         for ext in ("-wal", "-shm"):
                             legacy_wal = legacy_db + ext
                             if os.path.exists(legacy_wal):
                                 try:
                                     shutil.move(legacy_wal, self.database_path + ext)
                                 except Exception as e:
-                                    self.log_debug("Failed to move legacy WAL file %s: %s", legacy_wal, e)
+                                    self.log_debug("Failed to move legacy WAL file %s: %s", (legacy_wal, e))
                     except Exception as e:
-                        self.log_debug("Failed to move legacy database file to %s: %s", self.database_path, e)
+                        self.log_debug("Failed to move legacy database file to %s: %s", (self.database_path, e))
                 else:
                     # Target database already exists and is non-empty. Archive legacy database into backups/
                     os.makedirs(self.backup_dir, exist_ok=True)
@@ -244,7 +244,7 @@ class Plugin(BasePlugin):
                         shutil.move(legacy_db, archived_legacy)
                         self.log(
                             "Legacy database found at %s. Archived to %s (active database already present at %s).",
-                            legacy_db, archived_legacy, self.database_path
+                            (legacy_db, archived_legacy, self.database_path)
                         )
                         for ext in ("-wal", "-shm"):
                             legacy_wal = legacy_db + ext
@@ -254,7 +254,7 @@ class Plugin(BasePlugin):
                                 except Exception:
                                     pass
                     except Exception as e:
-                        self.log_debug("Failed to archive legacy database file %s: %s", legacy_db, e)
+                        self.log_debug("Failed to archive legacy database file %s: %s", (legacy_db, e))
 
             # Check for legacy backup directory: data_folder_path/deleech_backups
             legacy_backup_dir = os.path.join(self.data_folder_path, "deleech_backups")
@@ -271,7 +271,7 @@ class Plugin(BasePlugin):
                         try:
                             shutil.move(src_file, dst_file)
                         except Exception as e:
-                            self.log_debug("Failed to move legacy backup %s: %s", src_file, e)
+                            self.log_debug("Failed to move legacy backup %s: %s", (src_file, e))
                     else:
                         try:
                             os.remove(src_file)
@@ -282,7 +282,7 @@ class Plugin(BasePlugin):
                         os.rmdir(legacy_backup_dir)
                         self.log("Removed empty legacy backup directory: %s", legacy_backup_dir)
                 except Exception as e:
-                    self.log_debug("Failed to remove legacy backup directory %s: %s", legacy_backup_dir, e)
+                    self.log_debug("Failed to remove legacy backup directory %s: %s", (legacy_backup_dir, e))
         except Exception as e:
             self.log_debug("Error during legacy database migration check: %s", e)
 
