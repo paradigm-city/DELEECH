@@ -917,6 +917,7 @@ class Plugin(BasePlugin):
             pass
 
         # we need to get these numbers regardless of whether warning level was raised
+        self._ensure_strike_row(user)
         self.csr.execute("SELECT leecher, strikes, unban_count FROM strikes where leecher=?", [user])
         rows = self.csr.fetchall()
         num_strikes = int(rows[0][1])
@@ -954,6 +955,10 @@ class Plugin(BasePlugin):
 
         self.trigger_ui_refresh()
 
+    def _ensure_strike_row(self, user):
+        self.csr.execute("insert or ignore into strikes(leecher, strikes, strikes_total, mb_uploaded) "
+                         "values (?, 0, 0, 0)", [user])
+
     def unstrike_leecher(self, user):
         self.csr.execute("update strikes set strikes=0, strikedate=null, mb_uploaded=0, last_state=null where leecher=? and strikes > 0", [user])
         if self.csr.rowcount > 0:
@@ -979,6 +984,8 @@ class Plugin(BasePlugin):
             file_size = os.path.getsize(real_path) / (1024 * 1024)
             self.log_debug("%s: downloading %1.1f MB.", (user, file_size))
 
+            # Without auto-ban, leechers are never struck, so their row may not exist yet
+            self._ensure_strike_row(user)
             self.csr.execute("update strikes set mb_uploaded = mb_uploaded+?, last_state=? where leecher=?", [file_size, self.probed_users[user], user])
             self.conn.commit()
 
