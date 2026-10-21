@@ -432,6 +432,10 @@ flowchart TD
   - Supports multi-selection.
   - Resets active strike count, uploaded MB, and status flags back to zero in the database while retaining lifetime audit history (`strikes_total`).
   - Sets active state to `"okay"`, giving the peer a clean slate.
+- **Right-Click Context Menu**:
+  - Offers *Reset Strikes* for the selected rows.
+  - Includes Nicotine+'s native **User Actions** submenu (`UserPopupMenu`): profile, private message, browse files, add buddy, ban/ignore user or IP, show IP address, private rooms.
+  - With multiple rows selected, *User Actions* lists one submenu per user (up to 20).
 
 ---
 
