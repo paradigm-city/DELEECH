@@ -181,6 +181,7 @@ When `show_ui_tab` is enabled, DELEECH embeds a dedicated tab directly into the 
   - **Reset Strikes**: Clears active strikes and warnings for the selected user, giving them a fresh start.
   - **Unban Selected**: Immediately lifts the network filter ban for the selected user and resets ban expiry.
   - **Browse Shares**: Opens Nicotine+'s native share browser for the selected user to manually inspect their files.
+  - **Right-Click Menu**: Reset Strikes plus Nicotine+'s standard *User Actions* submenu (profile, message, browse, buddy, ban/ignore, IP).
 - **Headless & Cross-GTK Resilience**: Dispatches UI updates via `GLib.idle_add` for thread safety, safely degrades when running in CLI/headless mode, and adapts to both GTK 3 and GTK 4 container models.
 
 ---
@@ -270,6 +271,7 @@ DELEECH includes an integrated GTK4 / Adwaita monitor tab docked directly into t
   - Multi-select manual unban (`Unban Selected`).
   - Multi-select strike forgiveness (`Reset Strikes`).
   - Direct share browser access (`Browse Shares` or double-clicking any row).
+  - Right-click context menu with Nicotine+'s *User Actions* submenu.
 
 For complete technical documentation, widget hierarchy, sequence diagrams, and lifecycle specifications, see [MONITOR.md](MONITOR.md).
 

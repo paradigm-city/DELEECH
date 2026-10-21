@@ -153,6 +153,8 @@ class Plugin(BasePlugin):
         # UI Transparency state
         self.ui_page = None
         self.treeview = None
+        self.popup_menu = None
+        self.popup_menu_users = None
         self.stats_label = None
         self.filter_entry = None
         self._filter_text = ""
@@ -1381,6 +1383,19 @@ class Plugin(BasePlugin):
             except Exception:
                 pass
 
+        # Right-click context menu with Nicotine+ "User Actions" submenu
+        from pynicotine.gtkgui.widgets.popupmenu import PopupMenu, UserPopupMenu
+
+        self.popup_menu_users = UserPopupMenu(window.application, tab_name="deleech")
+        self.popup_menu = PopupMenu(
+            window.application, parent=self.treeview.widget, callback=self._on_popup_menu
+        )
+        self.popup_menu.add_items(
+            ("#" + "Reset Strikes", self._on_reset_clicked),
+            ("", None),
+            (">" + "User Actions", self.popup_menu_users)
+        )
+
         self._pack_widget(page_container, scrolled, expand=True, fill=True)
 
         class DeleechTabHandler:
@@ -1509,9 +1524,18 @@ class Plugin(BasePlugin):
                     except Exception:
                         pass
 
+                for menu in (self.popup_menu, self.popup_menu_users):
+                    if menu is not None:
+                        try:
+                            menu.destroy()
+                        except Exception:
+                            pass
+
                 self.ui_page = None
                 self._tab_handler = None
                 self.treeview = None
+                self.popup_menu = None
+                self.popup_menu_users = None
                 self.stats_label = None
                 self.filter_entry = None
                 self.window = None
@@ -1733,7 +1757,39 @@ class Plugin(BasePlugin):
     def _on_refresh_clicked(self, button):
         self.refresh_ui()
 
-    def _on_unban_clicked(self, button):
+    def _on_popup_menu(self, _menu, _widget):
+        self.popup_menu_users.clear()
+
+        if not self.treeview:
+            return
+
+        selected_users = []
+        for iterator in self.treeview.get_selected_rows():
+            user = self.treeview.get_row_value(iterator, "user")
+            if user and user not in selected_users:
+                selected_users.append(user)
+
+        if not selected_users:
+            return
+
+        from pynicotine.gtkgui.widgets.popupmenu import UserPopupMenu
+
+        # Multiple users, create submenus for some of them
+        if len(selected_users) > 1:
+            for user in selected_users[:20]:
+                popup = UserPopupMenu(self.window.application, username=user, tab_name="deleech")
+                popup.update_model()
+                popup.toggle_user_items()
+                self.popup_menu_users.add_items((">" + user, popup))
+                self.popup_menu_users.update_model()
+            return
+
+        # Single user, add items directly to "User Actions" submenu
+        self.popup_menu_users.setup_user_menu(selected_users[0])
+        self.popup_menu_users.update_model()
+        self.popup_menu_users.toggle_user_items()
+
+    def _on_unban_clicked(self, *_args):
         if not self.treeview:
             return
         selected = list(self.treeview.get_selected_rows())
@@ -1745,7 +1801,7 @@ class Plugin(BasePlugin):
                 self.unstrike_leecher(user)
         self.refresh_ui()
 
-    def _on_reset_clicked(self, button):
+    def _on_reset_clicked(self, *_args):
         if not self.treeview:
             return
         selected = list(self.treeview.get_selected_rows())
